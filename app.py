@@ -53,7 +53,7 @@ app_ui = ui.page_navbar(
                    ui.output_plot('att1_dist')
                    ),
                  ui.page_fluid(
-                   ui.h5('Q-Matrix (Editable)'),
+                   ui.h5('Edit this table to show what questions measure each skill', ui.br(), '(questions can measure more than one skill)'),
                    ui.output_data_frame('qmatrix')
                    ),
                  col_widths = (5, 7)
@@ -66,19 +66,39 @@ app_ui = ui.page_navbar(
   title = 'DCMs For Practitioners',  
   id = 'page',
   sidebar = ui.sidebar(
-    ui.input_file('load', 'Read in your dataset'),
+    ui.input_file('load', 'Load in your dataset'),
     ui.input_select('type_model',
                     'Choose a Model Type:',
-                    {'dino': 'DINO'}
-       #'dina': 'DINA', 'lcdm': 'LCDM'},
+                    {'dino': 'Has at least one skill measured by each question',
+                     'dina': 'Has all skills measured by each question'}
+                    # 'lcdm': 'LCDM'},
     ),
-    ui.input_slider('attr_num', 'Choose number of attributes', 2, 5, 2),
-    ui.input_slider('att1_alpha', 'Beta Distribution - Attribute 1: Alpha', 0, 50, 1, step = .5),
-    ui.input_slider('att1_beta', 'Beta Distribution - Attribute 1: Beta', 0, 50, 1, step = .5),
-    # ui.input_text_area('priors', 'Include Priors for Attributes', rows = 6),
+    ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2),
+    ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 1, step = .5),
+    ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 1, step = .5),
+    ui.input_checkbox("all_same_prior", "Keep all the same skill priors as above", True),
+    ui.panel_conditional(
+      '!input.all_same_prior',
+      ui.input_slider('att2_alpha', 'Beta Distribution - Skill 2: Alpha', 0, 50, 1, step = .5),
+      ui.input_slider('att2_beta', 'Beta Distribution - Skill 2: Beta', 0, 50, 1, step = .5),
+      ui.input_slider('att3_alpha', 'Beta Distribution - Skill 3: Alpha', 0, 50, 1, step = .5),
+      ui.input_slider('att3_beta', 'Beta Distribution - Skill 3: Beta', 0, 50, 1, step = .5),
+      ui.input_slider('att4_alpha', 'Beta Distribution - Skill 4: Alpha', 0, 50, 1, step = .5),
+      ui.input_slider('att4_beta', 'Beta Distribution - Skill 4: Beta', 0, 50, 1, step = .5),
+      ui.input_slider('att5_alpha', 'Beta Distribution - Skill 5: Alpha', 0, 50, 1, step = .5),
+      ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', 0, 50, 1, step = .5),
+    ),
+    ui.h6('How likely students are to have the skill, but get question incorrect'),
+    ui.input_slider('slip_alpha', 'Beta Distribution - Slip: Alpha', 0, 50, 5, step = .5),
+    ui.input_slider('slip_beta', 'Beta Distribution - Slip: Beta', 0, 50, 20, step = .5),
+    ui.h6('How likely students are to not have the skill, but get question correct by guessing'),
+    ui.input_slider('guess_alpha', 'Beta Distribution - Guess: Alpha', 0, 50, 5, step = .5),
+    ui.input_slider('guess_beta', 'Beta Distribution - Guess: Beta', 0, 50, 20, step = .5),
     ui.input_action_button('build_model', 'Update parameters'),
-    ui.input_action_button('run_model', 'Run'),
-    ui.download_button("download_q", "Download Q-Matrix (CSV)") # remove this after knowing q-matrix is accurate
+    ui.input_action_button('run_model', 'Run model'),
+    ui.download_button('download_q', 'Download Q-Matrix (CSV)'),
+    ui.input_checkbox('use_intial_values', 'Check this box if model does not converge', False)
+    # ui.input_text_area('priors', 'Include Priors for Attributes', rows = 6),
   ),
   theme = shinyswatch.theme.flatly
 )
@@ -133,18 +153,6 @@ def server(input: Inputs, output: Outputs, session: Session):
   def qmatrix():
       return render.DataTable(empty_q.get(),
                               editable = True)
-
-  # @render.data_frame
-  # def qmatrix():
-  #   df = loaded_data()
-  #   if df is None:
-  #       return None
-  #   n_attrs = input.attr_num()
-  #   attr_cols = [f'A{i}' for i in range(1, n_attrs + 1)]
-  #   q = pd.DataFrame(0, index=df.columns, columns = attr_cols)
-  #   q.index.name = 'Item'
-  #   return render.DataTable(q.reset_index(),
-  #                           editable = True)
   
   @render.text
   def att1_avalue():
@@ -164,7 +172,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return None
     
     dist_data = pd.DataFrame({
-        'value': np.random.beta(alpha, beta, size=500)
+        'value': np.random.beta(alpha, beta, size = 1000)
     })
     
     plot = (
@@ -174,7 +182,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                         fill = 'seagreen')
       + pn.scale_x_continuous(limits = [0, 1],
                               breaks = np.arange(0, 1.1, .1))
-      + pn.labs(title = 'What Percentage of Respondents Should Have the Skill',
+      + pn.labs(title = 'How likely is it that students have the skill',
                 x = 'Probability',
                 y = '')
       + pn.theme_light()
@@ -214,26 +222,143 @@ def server(input: Inputs, output: Outputs, session: Session):
                                       4: 'A5'})
     return alpha
   
-  # @reactive.effect
-  # def _update_priors():
-  #   n = input.attr_num()
-  #   priors = '\n'.join(f'lambda{i} ~ beta(1,1);' for i in range(1, n + 1))
-  #   ui.update_text_area('priors',
-  #                       value = priors)
-  
   # THIS NEEDS WORK
-  # @reactive.event(input.build_model)
-  # def get_inits():
-  #   df = loaded_data()
+  @reactive.event(input.build_model)
+  def get_inits():
+    n = input.attr_num()
+    df = loaded_data()
+    alpha = create_alpha()
     
-  #   return {
-  #       "nu": np.repeat(1/stan_dict['C'], stan_dict['C']),  # Start with equal class probabilities
-  #       "slip": np.random.uniform(0.05, 0.15, size = stan_dict['I']).tolist(),
-  #       "guess": np.random.uniform(0.05, 0.15, size = stan_dict['I']).tolist(),
-  #       "lambda1": np.random.uniform(0.7, 0.9),
-  #       "lambda2": np.random.uniform(0.7, 0.9),
-  #       "lambda3": np.random.uniform(0.7, 0.9)
-  #   }
+    slip_alpha = input.slip_alpha()
+    slip_beta = input.slip_beta()
+    guess_alpha = input.guess_alpha()
+    guess_beta = input.guess_beta()
+    
+    slip = np.random.beta(slip_alpha, slip_beta, size = 1000)
+    guess = np.random.beta(guess_alpha, guess_beta, size = 1000)
+    
+    slip_start = np.mean(slip)
+    guess_start = np.mean(guess)
+    
+    slip_sd = np.std(slip)
+    guess_sd = np.std(guess)
+    
+    if n == 2:
+      if input.use_intial_values() == True:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        
+        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+        
+        start = np.mean([att1_dist, att2_dist])
+        sd = np.std([att1_dist, att2_dist])
+        
+        return {
+          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+      }
+      else:
+        return None
+    
+    elif n == 3:
+      if input.use_intial_values() == True:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        alpha3 = input.att3_alpha()
+        beta3 = input.att3_beta()
+        
+        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+        att3_dist = np.random.beta(alpha3, beta3, size = 1000)
+        
+        start = np.mean([att1_dist, att2_dist, att3_dist])
+        sd = np.std([att1_dist, att2_dist, att3_dist])
+        
+        return {
+          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+      }
+      else:
+        return None
+    
+    elif n == 4:
+      if input.use_intial_values() == True:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        alpha3 = input.att3_alpha()
+        beta3 = input.att3_beta()
+        alpha4 = input.att4_alpha()
+        beta4 = input.att4_beta()
+        
+        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+        att3_dist = np.random.beta(alpha3, beta3, size = 1000)
+        att4_dist = np.random.beta(alpha4, beta4, size = 1000)
+        
+        start = np.mean([att1_dist, att2_dist, att3_dist, att4_dist])
+        sd = np.std([att1_dist, att2_dist, att3_dist, att4_dist])
+        
+        return {
+          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda4': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+      }
+      else:
+        return None
+
+    elif n == 5:
+      if input.use_initial_values() == True:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        alpha3 = input.att3_alpha()
+        beta3 = input.att3_beta()
+        alpha4 = input.att4_alpha()
+        beta4 = input.att4_beta()
+        alpha5 = input.att5_alpha()
+        beta5 = input.att5_beta()
+        
+        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+        att3_dist = np.random.beta(alpha3, beta3, size = 1000)
+        att4_dist = np.random.beta(alpha4, beta4, size = 1000)
+        att5_dist = np.random.beta(alpha5, beta5, size = 1000)
+        
+        start = np.mean([att1_dist, att2_dist, att3_dist, att4_dist, att5_dist])
+        sd = np.std([att1_dist, att2_dist, att3_dist, att4_dist, att5_dist])
+        
+        return {
+          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda4': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+          'lambda5': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+      }
+      else:
+        return None
+    
 
   @reactive.event(input.build_model)
   def update_model():
@@ -247,12 +372,11 @@ def server(input: Inputs, output: Outputs, session: Session):
   # everything below this
   @render.download(filename = 'q_matrix_updated.csv')
   def download_q():
-    # Get the current state of the edited Q-matrix
-    q = qmatrix.get()
-    # Use a generator to yield the CSV data
-    if q is not None:
-        yield q.to_csv(index = False)
-
+    q = empty_q.get()
+    if q is None or q.empty:
+      raise SafeException('Q-matrix is empty. Load data and edit the table first.')
+    yield q.to_csv(index = False)
+    
 # --------------------------------------------------------------------------------------------------------
 
 app = App(app_ui, server)
