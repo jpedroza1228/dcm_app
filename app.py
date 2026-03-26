@@ -9,6 +9,8 @@ import arviz as az
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 from shiny.types import SafeException
 import shinyswatch
+from pathlib import Path
+from cmdstanpy import CmdStanModel
 
 pd.set_option('display.max_columns', None)
 matplotlib.rcParams.update({'savefig.bbox': 'tight'})
@@ -16,6 +18,18 @@ matplotlib.rcParams.update({'savefig.bbox': 'tight'})
 # --------------------------------------------------------------------------------------------------------
 
 # code
+def stan_datachunk():
+  data = 'data {\nint<lower=1> J;\nint<lower=1> I;\nint<lower=1> C;\nint<lower=1> K;\nmatrix<lower=0,upper=1> [J,I] Y;\nmatrix<lower=0,upper=1> [I,K] Q;\nmatrix<lower=0,upper=1> [C,K] alpha;\n}'
+  return data
+
+print(stan_datachunk())
+
+def stan_paramchunk():
+  param = 'parameters {\nordered[C] raw_nu_ordered;\nvector<lower=0, upper=1>[I] slip;\nvector<lower=0, upper=1>[I] guess;\n'
+  return param
+    
+print(stan_paramchunk())
+
 def q_lower(x):
     return x.quantile(.025)
   
@@ -44,59 +58,126 @@ def acceptable_fit_stat(inference_data, func_name = ['waic', 'loo']):
 
 # --------------------------------------------------------------------------------------------------------
 
-app_ui = ui.page_navbar(  
-  ui.nav_panel('Examining Data',
+app_ui = ui.page_navbar(
+  ui.nav_panel('Background Information',
                ui.layout_columns(
                  ui.page_fluid(
-                   ui.h5('Top 5 rows of dataset'),
-                   ui.output_data_frame('dataset'),
-                   ui.output_plot('att1_dist')
+                   ui.markdown("""
+                               This page has all the information required to use the following pages for using diagnostic classification models (DCM) to see which respondents have the skills measured in assessments. Currently, this application is focused on DCMs for smaller samples as an introduction to using DCMs as an preventive measure to flag respondents that may not have a grasp of skills assessed in an assessment.
+                             
+                               *This application should not be used as the sole measure of assessing proficiency in respondents. These models are not perfect, especially for smaller samples, so user judgment should be used to determine respondent proficiency.*
+                             
+                               An example of a Q-matrix is shown below.
+                               """),
+                   ui.tags.table(
+                    ui.tags.thead(
+                      ui.tags.tr(
+                        ui.tags.th('Item'),
+                        ui.tags.th('A1'),
+                        ui.tags.th('A2')
+                        )
+                      ),
+                   ui.tags.tbody(
+                     ui.tags.tr(
+                       ui.tags.td('Item1'),
+                       ui.tags.td('0'),
+                       ui.tags.td('1')
+                       ),
+                     ui.tags.tr(
+                       ui.tags.td('Item2'),
+                       ui.tags.td('1'),
+                       ui.tags.td('0')
+                       ),
+                     ui.tags.tr(
+                       ui.tags.td('Item3'),
+                       ui.tags.td('1'),
+                       ui.tags.td('1')
+                       )
+                     ),
+                   class_= 'table table-striped'),  
+                 ),               
+                 ui.page_fluid(
+                   ui.h5('Important Information for Practitioners'),
+                      ui.markdown("""
+                      - Can currently only support DINO and DINA models (see [the paper here on small sample DCMs](https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2020.621251/full))
+                          - DINO = Respondents have at least one skill to solve the question
+                          - DINA = Respondents need all the skills to solve the question
+                          - Differences between models is apparent when questions measure more than one skill
+                      - You'll need a Q-matrix to conduct analyses
+                          - A Q-matrix is a checklist that you will create to show what questions (row) measure each skill (column) 
+                          - When a question measures one or more skills, you will mark that cell with a 1, otherwise keep it as a 0
+                          - **For a Q-matrix template, load your data, choose the number of skills, and click on the generate template button**
+                      - Currently only supporting full data datasets
+                          - Data must be coded as 1 = Correct and 0 = Incorrect
+                          - Missing data could be coded as 0
+                      - Currently skills will need to be named A1 - A5
+                      - If you have a large sample (N > 200), beta(1,1) priors will be sufficient
+                          - Otherwise more informative priors are needed
+                          - You can plot what the priors look like by using the `Update parameters` option after choosing values for the prior
+                      - Any feedback can be provided as a GitHub issue [here](https://github.com/jpedroza1228/dcm_app/issues)
+                      """)
+                      ),
+                 col_widths = (5, 7)
+                 )
+               ),
+  ui.nav_panel('Data Exploration',
+               ui.layout_columns(
+                 ui.page_fluid(
+                   ui.output_plot('att1_dist'),
+                   ui.hr(),
+                   ui.output_plot('slip_dist')
                    ),
                  ui.page_fluid(
-                   ui.h5('Edit this table to show what questions measure each skill', ui.br(), '(questions can measure more than one skill)'),
+                   ui.h6('Top 5 rows of dataset'),
+                   ui.output_data_frame('dataset'),
+                   ui.hr(),
+                   ui.h6('Uploaded Q-Matrix'),
                    ui.output_data_frame('qmatrix')
                    ),
-                 col_widths = (5, 7)
+                 col_widths = (6, 6)
                  )
                ), 
   ui.nav_spacer(),
   ui.nav_control(ui.input_dark_mode()),
-  # ui.nav_panel('B', 'Page B content'),  
   # ui.nav_panel('C', 'Page C content'),  
-  title = 'DCMs For Practitioners',  
+  title = '"Small" Sample DCMs For Practitioners',  
   id = 'page',
   sidebar = ui.sidebar(
-    ui.input_file('load', 'Load in your dataset'),
+    ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2),
+    ui.download_button('download_q', 'Generate Q-Matrix Template (Needs data loaded)'),
+    ui.input_file('load', 'Load in your data'),
+    ui.input_file('qload', 'Load in your Q-Matrix'),
     ui.input_select('type_model',
                     'Choose a Model Type:',
-                    {'dino': 'Has at least one skill measured by each question',
-                     'dina': 'Has all skills measured by each question'}
+                    {'dino': 'DINO',
+                     'dina': 'DINA'}
                     # 'lcdm': 'LCDM'},
     ),
-    ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2),
-    ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 1, step = .5),
-    ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 1, step = .5),
+    ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 20, step = .5),
+    ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 5, step = .5),
     ui.input_checkbox("all_same_prior", "Keep all the same skill priors as above", True),
     ui.panel_conditional(
       '!input.all_same_prior',
-      ui.input_slider('att2_alpha', 'Beta Distribution - Skill 2: Alpha', 0, 50, 1, step = .5),
-      ui.input_slider('att2_beta', 'Beta Distribution - Skill 2: Beta', 0, 50, 1, step = .5),
-      ui.input_slider('att3_alpha', 'Beta Distribution - Skill 3: Alpha', 0, 50, 1, step = .5),
-      ui.input_slider('att3_beta', 'Beta Distribution - Skill 3: Beta', 0, 50, 1, step = .5),
-      ui.input_slider('att4_alpha', 'Beta Distribution - Skill 4: Alpha', 0, 50, 1, step = .5),
-      ui.input_slider('att4_beta', 'Beta Distribution - Skill 4: Beta', 0, 50, 1, step = .5),
-      ui.input_slider('att5_alpha', 'Beta Distribution - Skill 5: Alpha', 0, 50, 1, step = .5),
-      ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', 0, 50, 1, step = .5),
+      ui.input_slider('att2_alpha', 'Beta Distribution - Skill 2: Alpha', .5, 50, 20, step = .5),
+      ui.input_slider('att2_beta', 'Beta Distribution - Skill 2: Beta', .5, 50, 5, step = .5),
+      ui.input_slider('att3_alpha', 'Beta Distribution - Skill 3: Alpha', .5, 50, 20, step = .5),
+      ui.input_slider('att3_beta', 'Beta Distribution - Skill 3: Beta', .5, 50, 5, step = .5),
+      ui.input_slider('att4_alpha', 'Beta Distribution - Skill 4: Alpha', .5, 50, 20, step = .5),
+      ui.input_slider('att4_beta', 'Beta Distribution - Skill 4: Beta', .5, 50, 5, step = .5),
+      ui.input_slider('att5_alpha', 'Beta Distribution - Skill 5: Alpha', .5, 50, 20, step = .5),
+      ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', .5, 50, 5, step = .5),
     ),
-    ui.h6('How likely students are to have the skill, but get question incorrect'),
-    ui.input_slider('slip_alpha', 'Beta Distribution - Slip: Alpha', 0, 50, 5, step = .5),
-    ui.input_slider('slip_beta', 'Beta Distribution - Slip: Beta', 0, 50, 20, step = .5),
-    ui.h6('How likely students are to not have the skill, but get question correct by guessing'),
-    ui.input_slider('guess_alpha', 'Beta Distribution - Guess: Alpha', 0, 50, 5, step = .5),
-    ui.input_slider('guess_beta', 'Beta Distribution - Guess: Beta', 0, 50, 20, step = .5),
-    ui.input_action_button('build_model', 'Update parameters'),
+    ui.hr(),
+    ui.h6('How likely students are to have the skill, but get question incorrect (slip)'),
+    ui.input_slider('slip_alpha', 'Beta Distribution - Slip: Alpha', .5, 50, 5, step = .5),
+    ui.input_slider('slip_beta', 'Beta Distribution - Slip: Beta', .5, 50, 20, step = .5),
+    ui.hr(),
+    ui.h6('How likely students are to not have the skill, but get question correct (guess)'),
+    ui.input_slider('guess_alpha', 'Beta Distribution - Guess: Alpha', .5, 50, 5, step = .5),
+    ui.input_slider('guess_beta', 'Beta Distribution - Guess: Beta', .5, 50, 20, step = .5),
+    ui.hr(),
+    ui.input_action_button('build_model', 'Plot/Update parameters'),
     ui.input_action_button('run_model', 'Run model'),
-    ui.download_button('download_q', 'Download Q-Matrix (CSV)'),
     ui.input_checkbox('use_intial_values', 'Check this box if model does not converge', False)
     # ui.input_text_area('priors', 'Include Priors for Attributes', rows = 6),
   ),
@@ -120,7 +201,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         col for col in df.columns
         if set(df[col].dropna().unique()).issubset({0, 1})
     ]
-    return df[cols]
+    return df[cols].clean_names(case_type = 'snake')
 
   @render.data_frame
   def dataset():
@@ -137,22 +218,26 @@ def server(input: Inputs, output: Outputs, session: Session):
       n_attrs = input.attr_num()
       attr_cols = [f'A{i}' for i in range(1, n_attrs + 1)]
       # Build the fresh grid
-      q = pd.DataFrame(0, index=df.columns, columns=attr_cols).reset_index()
-      q.rename(columns={"index": "Item"}, inplace=True)
+      q = pd.DataFrame(0, index = df.columns, columns = attr_cols).reset_index()
+      q.rename(columns={"index": "Item"}, inplace = True)
       empty_q.set(q)
-  
-  @reactive.effect
-  @reactive.event(input.qmatrix_cell_edit)
-  def _update_qmatrix():
-    edit = input.qmatrix_cell_edit()
-    q = empty_q.get().copy()
-    q.iat[edit["row"], edit["col"]] = edit["value"]
-    empty_q.set(q)
+    
+  @reactive.calc
+  def loaded_q():
+    uploaded = input.qload()
+    if not uploaded:
+        return None
+    q = pd.read_csv(uploaded[0]['datapath'])
+    q = q.clean_names(case_type = 'snake').rename(columns = {'unnamed_0': 'item'})
+    q['item'] = q['item'] + 1
+    return q
     
   @render.data_frame
   def qmatrix():
-      return render.DataTable(empty_q.get(),
-                              editable = True)
+    q = loaded_q()
+    if q is None:
+        return None
+    return render.DataTable(q)
   
   @render.text
   def att1_avalue():
@@ -178,13 +263,42 @@ def server(input: Inputs, output: Outputs, session: Session):
     plot = (
       pn.ggplot(dist_data,
                 pn.aes('value'))
-      + pn.geom_density(color = 'white',
+      + pn.geom_density(color = 'black',
                         fill = 'seagreen')
       + pn.scale_x_continuous(limits = [0, 1],
                               breaks = np.arange(0, 1.1, .1))
       + pn.labs(title = 'How likely is it that students have the skill',
                 x = 'Probability',
-                y = '')
+                y = '',
+                caption = 'Plot shows skill 1 (will be similar to other skills)')
+      + pn.theme_light()
+    )
+    return plot.draw()
+  
+  @render.plot
+  @reactive.event(input.build_model)
+  def slip_dist():
+    alpha = input.slip_alpha()
+    beta = input.slip_beta()
+    
+    if alpha <= 0 or beta <= 0:
+        return None
+    
+    dist_data = pd.DataFrame({
+        'value': np.random.beta(alpha, beta, size = 1000)
+    })
+    
+    plot = (
+      pn.ggplot(dist_data,
+                pn.aes('value'))
+      + pn.geom_density(color = 'black',
+                        fill = 'seagreen')
+      + pn.scale_x_continuous(limits = [0, 1],
+                              breaks = np.arange(0, 1.1, .1))
+      + pn.labs(title = 'How likely will a student slip',
+                x = 'Probability',
+                y = '',
+                caption = 'Plot shows slip as example (similar to guess)')
       + pn.theme_light()
     )
     return plot.draw()
@@ -359,22 +473,95 @@ def server(input: Inputs, output: Outputs, session: Session):
       else:
         return None
     
-
   @reactive.event(input.build_model)
   def update_model():
     return f'{input.build_model()}'
-      
+  
+  @reactive.event(input.build_model)
+  def stan_parameters_block():
+    attr_num = input.attr_num()
+    
+    param = 'parameters {\nordered[C] raw_nu_ordered;\nvector<lower=0, upper=1>[I] slip;\nvector<lower=0, upper=1>[I] guess;\n'
+        
+    if attr_num == '2':
+      attr_list = ['1', '2']
+    elif attr_num == '3':
+      attr_list = ['1', '2', '3']
+    elif attr_num == '4':
+      attr_list = ['1', '2', '3', '4']
+    else:
+      attr_list = ['1', '2', '3', '4', '5']
+
+    lambdas = '\n'.join([f'real<lower=0, upper=1> lambda{i};' for i in attr_list])
+
+    return param + lambdas + '\n}'
+  
+  @reactive.event(input.build_model)
+  def stan_tparamchunk():
+    attr_num = input.attr_num()
+    model_type = input.model_type()
+    
+    param = 'transformed parameters {\nsimplex[C] nu;\nmatrix[I,C] delta;\nmatrix[I,C] pi;'
+
+    if attr_num == '2':
+      attr_list = ['1', '2']
+      attr_num = [1, 2]
+    elif attr_num == '3':
+      attr_list = ['1', '2', '3']
+      attr_num = [1, 2, 3]
+    elif attr_num == '4':
+      attr_list = ['1', '2', '3', '4']
+      attr_num = [1, 2, 3, 4]
+    else:
+      attr_list = ['1', '2', '3', '4', '5']
+      attr_num = [1, 2, 3, 4, 5]
+
+    thetas = '\n'.join([f'vector[C] theta{i};' for i in attr_list])
+    theta_loop_open = '\n\nfor (c in 1:C){\n'
+    theta_cal = '\n'.join([f'  theta{i}[c] = (alpha[c, {j}] > 0) ? lambda{i} : (1 - lambda{i});' for i, j in zip(attr_list, attr_num)])
+    theta_loop_close = '\n}'
+
+    nu_calc = f'\n\nnu = softmax(raw_nu_ordered);\nvector[C] log_nu = log(nu);\n'
+
+    if model_type == 'dino':
+      if attr_list == '2':
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]));\n}}\n}}'
+      elif attr_list == '3':
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]));\n}}\n}}'
+      elif attr_list == '4':
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]) *\n  pow(1 - theta4[c], Q[i, 4]));\n}}\n}}'
+      else:
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]) *\n  pow(1 - theta4[c], Q[i, 4]) *\n  pow(1 - theta5[c], Q[i, 5]));\n}}\n}}'
+
+    elif model_type == 'dina':
+      if attr_list == '2':
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]);\n}}\n}}'
+      elif attr_list == '3':
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]) *\n  pow(theta3[c], Q[i, 3]);\n}}\n}}'
+      elif attr_list == '4':
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]) *\n  pow(theta3[c], Q[i, 3]) *\n  pow(theta4[c], Q[i, 4]);\n}}\n}}'
+      else:
+        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]) *\n  pow(theta3[c], Q[i, 3]) *\n  pow(theta4[c], Q[i, 4]) *\n  pow(theta5[c], Q[i, 5]);\n}}\n}}'
+
+    pi_calc = f'for (c in 1:C){{\n  for (i in 1:I){{pi[i,c] = pow((1 - slip[i]), delta[i,c]) *\n  pow(guess[i], (1 - delta[i,c]));\n}}\n}}'
+
+    trans_param = param + thetas + theta_loop_open + theta_cal + theta_loop_close + nu_calc + delta_calc + pi_calc
+
+    return trans_param
+
+  # @render.text
+  # def compile_stan():
+    
   @render.text
   @reactive.event(input.run_model)
   def model_button():
     return f'{input.run_model()}'
   
-  # everything below this
-  @render.download(filename = 'q_matrix_updated.csv')
+  @render.download(filename = 'q_matrix_template.csv')
   def download_q():
     q = empty_q.get()
-    if q is None or q.empty:
-      raise SafeException('Q-matrix is empty. Load data and edit the table first.')
+    # if q is None or q.empty:
+    #   raise SafeException('Q-matrix is empty. Load data and edit the table first.')
     yield q.to_csv(index = False)
     
 # --------------------------------------------------------------------------------------------------------
@@ -383,39 +570,5 @@ app = App(app_ui, server)
 
 # --------------------------------------------------------------------------------------------------------
 
-# from shiny import App, ui, render, reactive, Inputs, Outputs, Session
+# extra
 
-# # ... (UI code remains mostly the same)
-
-# def server(input: Inputs, output: Outputs, session: Session):
-    
-#     @reactive.effect
-#     def _update_priors():
-#         n = input.attr_num()
-#         # Vectorized format is cleaner: lambda ~ beta(1,1);
-#         # But we can also generate individual ones if the user wants specific control
-#         priors = '\n'.join(f'lambda[{i}] ~ beta(1, 1);' for i in range(1, n + 1))
-#         ui.update_text_area('priors', value=priors)
-
-#     @reactive.calc
-#     def construct_stan_model():
-#         # This takes the template above and injects the UI inputs
-#         # You would store the "Generalized Stan Template" in a string variable
-#         template = """... (The Stan code from above) ..."""
-        
-#         user_priors = input.priors()
-#         full_model = template.replace("[PRIORS_PLACEHOLDER]", user_priors)
-#         return full_model
-
-#     @render.text
-#     @reactive.event(input.build_model)
-#     def model_preview():
-#         # This shows the user what the generated Stan code looks like
-#         return construct_stan_model()
-
-#     @reactive.event(input.run_model)
-#     def run_stan():
-#         model_string = construct_stan_model()
-#         # Here you would pass model_string to cmdstanpy or pystan
-#         print("Running model with attributes:", input.attr_num())
-#         # result = sm.sample(data=my_data_dict)
