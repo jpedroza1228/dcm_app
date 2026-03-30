@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib
 import numpy as np
 import plotnine as pn
-from great_tables import GT
+# from great_tables import GT
 from janitor import clean_names
 from pyhere import here
 import arviz as az
@@ -19,16 +19,18 @@ matplotlib.rcParams.update({'savefig.bbox': 'tight'})
 
 # code
 def stan_datachunk():
-  data = 'data {\nint<lower=1> J;\nint<lower=1> I;\nint<lower=1> C;\nint<lower=1> K;\nmatrix<lower=0,upper=1> [J,I] Y;\nmatrix<lower=0,upper=1> [I,K] Q;\nmatrix<lower=0,upper=1> [C,K] alpha;\n}'
+  data = 'data {\n  int<lower=1> J;\n  int<lower=1> I;\n  int<lower=1> C;\n  int<lower=1> K;\n  matrix<lower=0,upper=1> [J,I] Y;\n  matrix<lower=0,upper=1> [I,K] Q;\n  matrix<lower=0,upper=1> [C,K] alpha;\n}'
   return data
 
-print(stan_datachunk())
+def stan_generatechunk():
+  quant = f'generated quantities {{\n  matrix[J,C] prob_resp_class;\n  matrix[J,K] prob_resp_attr;\n  array[I] real eta;\n  row_vector[C] prob_joint;\n  array[C] real prob_attr_class;\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n   for (c in 1:C){{\n     for(i in 1:I){{\n       real p = fmin(fmax(pi[i,c], 1e-9), 1 - 1e-9);\n       eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n     }}\n     prob_joint[c] = exp(log_nu[c]) * exp(sum(eta));\n   }}\n   prob_resp_class[j] = prob_joint/sum(prob_joint);\n  }}\n\n  for (j in 1:J){{\n    for (k in 1:K){{\n      for (c in 1:C){{\n        prob_attr_class[c] = prob_resp_class[j,c] * alpha[c,k];\n      }}\n      prob_resp_attr[j,k] = sum(prob_attr_class);\n    }}\n  }}\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+  
+  return quant
 
-def stan_paramchunk():
-  param = 'parameters {\nordered[C] raw_nu_ordered;\nvector<lower=0, upper=1>[I] slip;\nvector<lower=0, upper=1>[I] guess;\n'
-  return param
-    
-print(stan_paramchunk())
+def stan_generateprior():
+  quant = f'generated quantities {{\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+  
+  return quant
 
 def q_lower(x):
     return x.quantile(.025)
@@ -111,16 +113,15 @@ app_ui = ui.page_navbar(
                           - Data must be coded as 1 = Correct and 0 = Incorrect
                           - Missing data could be coded as 0
                       - Currently skills will need to be named A1 - A5
-                      - If you have a large sample (N > 200), beta(1,1) priors will be sufficient
-                          - Otherwise more informative priors are needed
-                          - You can plot what the priors look like by using the `Update parameters` option after choosing values for the prior
+                      - If you have a sample greater than 200, beta(20,5) priors will be sufficient for skills
+                          - You can plot what the priors look like by using the `plot priors` option after choosing values for the prior
                       - Any feedback can be provided as a GitHub issue [here](https://github.com/jpedroza1228/dcm_app/issues)
                       """)
                       ),
                  col_widths = (5, 7)
                  )
                ),
-  ui.nav_panel('Data Exploration',
+    ui.nav_panel('Exploring Priors',
                ui.layout_columns(
                  ui.page_fluid(
                    ui.output_plot('att1_dist'),
@@ -128,7 +129,7 @@ app_ui = ui.page_navbar(
                    ui.output_plot('slip_dist')
                    ),
                  ui.page_fluid(
-                   ui.h6('Top 5 rows of dataset'),
+                  #  ui.h6('Top 5 rows of dataset'),
                    ui.output_data_frame('dataset'),
                    ui.hr(),
                    ui.h6('Uploaded Q-Matrix'),
@@ -136,26 +137,82 @@ app_ui = ui.page_navbar(
                    ),
                  col_widths = (6, 6)
                  )
-               ), 
+               ),
+  ui.nav_menu(
+    'Priors and Posteriors',
+    ui.nav_panel('Model Diagnostics (Everything Currently)',
+               ui.page_fluid(
+                 ui.output_table('top_rhat_values'),
+                 ui.output_plot('guess_prior_post_plot')
+               )
+              #  ui.layout_columns(
+              #    ui.page_fluid(
+              #      ui.output_plot('overall_ppmc'),
+              #      ui.output_plot('overall_cum_ppmc')
+              #    ),
+              #    ui.page_fluid(
+              #      ui.output_data_frame('diagnostics'),
+              #      ui.output_data_frame('ppmc_diag')
+              #    ),
+              #    col_widths = (6, 6)
+              #  )
+               ),
+  # ui.nav_panel('Assessment Evaluation',
+  #              ui.layout_columns(
+  #                ui.page_fluid(
+  #                  ui.output_plot('guess_slip_plot'),
+  #                  ui.output_plot('skill_plot')
+  #                ),
+  #                ui.page_fluid(
+  #                  ui.output_data_frame('mastery_df'),
+  #                  ui.output_data_frame('num_mastery')
+  #                ),
+  #                col_widths = (6, 6)
+  #              )
+  #              ),
+  # ui.nav_panel('Model Accuracy',
+              #  ui.layout_columns(
+              #    ui.page_fluid(
+              #      ui.output_plot('actual_v_model_correct')
+              #    ),
+              #    ui.page_fluid(
+              #      ui.output_data_frame('model_reliability')
+              #    ),
+              #    col_widths = (6, 6)
+              #  )
+              #  ),
+  ),
   ui.nav_spacer(),
   ui.nav_control(ui.input_dark_mode()),
-  # ui.nav_panel('C', 'Page C content'),  
-  title = '"Small" Sample DCMs For Practitioners',  
-  id = 'page',
   sidebar = ui.sidebar(
-    ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2),
-    ui.download_button('download_q', 'Generate Q-Matrix Template (Needs data loaded)'),
-    ui.input_file('load', 'Load in your data'),
-    ui.input_file('qload', 'Load in your Q-Matrix'),
+    ui.input_checkbox('have_df', 'I have a dataframe with 1s (correct) and 0s (incorrect)', True),
+    ui.panel_conditional(
+      '!input.have_df',
+      ui.input_file('messy_load', 'Load in your raw data'),
+      ui.input_text('correct_answers', 'Input correct responses separated by commas (e.g., a, d, c...)')
+    ),
+    ui.panel_conditional(
+      'input.have_df',
+      ui.input_file('load', 'Load in your data'),
+    ),
+    ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2), # will have to change this to be reactive for # of columns in Q-matrix
+    ui.input_checkbox('have_qmatrix', 'I have a Q-matrix', False),
+    ui.panel_conditional(
+      '!input.have_qmatrix',
+      ui.download_button('download_q', 'Generate Q-Matrix Template')
+    ),
+    ui.panel_conditional(
+      'input.have_qmatrix',
+      ui.input_file('qload', 'Load in your Q-Matrix')
+    ),
     ui.input_select('type_model',
                     'Choose a Model Type:',
                     {'dino': 'DINO',
                      'dina': 'DINA'}
-                    # 'lcdm': 'LCDM'},
     ),
     ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 20, step = .5),
     ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 5, step = .5),
-    ui.input_checkbox("all_same_prior", "Keep all the same skill priors as above", True),
+    ui.input_checkbox('all_same_prior', 'Keep all the same skill priors as above', True),
     ui.panel_conditional(
       '!input.all_same_prior',
       ui.input_slider('att2_alpha', 'Beta Distribution - Skill 2: Alpha', .5, 50, 20, step = .5),
@@ -167,20 +224,24 @@ app_ui = ui.page_navbar(
       ui.input_slider('att5_alpha', 'Beta Distribution - Skill 5: Alpha', .5, 50, 20, step = .5),
       ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', .5, 50, 5, step = .5),
     ),
-    ui.hr(),
+    # ui.hr(),
     ui.h6('How likely students are to have the skill, but get question incorrect (slip)'),
     ui.input_slider('slip_alpha', 'Beta Distribution - Slip: Alpha', .5, 50, 5, step = .5),
     ui.input_slider('slip_beta', 'Beta Distribution - Slip: Beta', .5, 50, 20, step = .5),
-    ui.hr(),
+    # ui.hr(),
     ui.h6('How likely students are to not have the skill, but get question correct (guess)'),
     ui.input_slider('guess_alpha', 'Beta Distribution - Guess: Alpha', .5, 50, 5, step = .5),
     ui.input_slider('guess_beta', 'Beta Distribution - Guess: Beta', .5, 50, 20, step = .5),
+    # ui.hr(),
+    ui.input_action_button('plot_param', 'Plot priors'),
     ui.hr(),
-    ui.input_action_button('build_model', 'Plot/Update parameters'),
+    ui.input_action_button('build_model', 'Update parameters'),
+    ui.input_slider('threshold', 'Probability Threshold for Skill Attainment (Higher means less false positives)', 0, 1, .8, step = .05),
     ui.input_action_button('run_model', 'Run model'),
-    ui.input_checkbox('use_intial_values', 'Check this box if model does not converge', False)
-    # ui.input_text_area('priors', 'Include Priors for Attributes', rows = 6),
+    ui.input_checkbox('use_init_values', 'Check this box if model does not converge', False)
   ),
+  title = '"Small" Sample DCMs',  
+  id = 'page',
   theme = shinyswatch.theme.flatly
 )
 
@@ -191,26 +252,47 @@ def server(input: Inputs, output: Outputs, session: Session):
   
   pass
 
+  compiled_model = reactive.Value(None)
+  compiled_stan_path = reactive.Value(None)
+  model_fit = reactive.Value(None)
+  idata = reactive.Value(None)
+  
+  compiled_prior = reactive.Value(None)
+  compiled_prior_path = reactive.Value(None)
+  prior_fit = reactive.Value(None)
+  # iprior = reactive.Value(None) # don't think I need this actually since I combined prior and full datasets for idata
+
+  @reactive.calc
+  def create_binary_df():
+    input_values = input.correct_answers()
+    input_list = input_values.strip(',')
+    upload_df = input.messy_load()
+    
+    rawdf = pd.read_csv(upload_df[0]['datapath'])
+    rawdf.columns = [f'item{i}' for i in range(1, len(rawdf.columns) + 1)]
+    
+    binary_df = pd.DataFrame({i: np.where(rawdf[i] == j, 1, 0) for i, j in zip(rawdf.columns, input_list)})
+    
+    # this needs up to be updated
+    return binary_df
+
   @reactive.calc
   def loaded_data():
     uploaded = input.load()
     if not uploaded:
         return None
     df = pd.read_csv(uploaded[0]['datapath'])
+
     cols = [
         col for col in df.columns
         if set(df[col].dropna().unique()).issubset({0, 1})
     ]
-    return df[cols].clean_names(case_type = 'snake')
 
-  @render.data_frame
-  def dataset():
-    df = loaded_data()
-    if df is None:
-        return None
-    return render.DataTable(df.head(),
-                            height = '225px')
-    
+    df = df.loc[:, cols].copy()
+    df.columns = [f'item{i}' for i in range(1, len(df.columns) + 1)]
+
+    return df
+
   @reactive.effect
   def _initialize_qmatrix():
     df = loaded_data()
@@ -219,7 +301,7 @@ def server(input: Inputs, output: Outputs, session: Session):
       attr_cols = [f'A{i}' for i in range(1, n_attrs + 1)]
       # Build the fresh grid
       q = pd.DataFrame(0, index = df.columns, columns = attr_cols).reset_index()
-      q.rename(columns={"index": "Item"}, inplace = True)
+      q.rename(columns = {'index': 'Item'}, inplace = True)
       empty_q.set(q)
     
   @reactive.calc
@@ -227,9 +309,11 @@ def server(input: Inputs, output: Outputs, session: Session):
     uploaded = input.qload()
     if not uploaded:
         return None
-    q = pd.read_csv(uploaded[0]['datapath'])
-    q = q.clean_names(case_type = 'snake').rename(columns = {'unnamed_0': 'item'})
-    q['item'] = q['item'] + 1
+      
+    q = pd.read_csv(uploaded[0]['datapath']).clean_names(case_type = 'snake')
+    q = q.rename(columns={q.columns[0]: 'item'})
+    q['item'] = [f'item{i}' for i in range(1, len(q) + 1)]
+
     return q
     
   @render.data_frame
@@ -239,6 +323,21 @@ def server(input: Inputs, output: Outputs, session: Session):
         return None
     return render.DataTable(q)
   
+  @render.download(filename = 'q_matrix_template.csv')
+  def download_q():
+    q = empty_q.get()
+    # if q is None or q.empty:
+    #   raise SafeException('Q-matrix is empty. Load data and edit the table first.')
+    yield q.to_csv(index = False)
+  
+  @render.data_frame
+  def dataset():
+    df = loaded_data()
+    if df is None:
+        return None
+    return render.DataTable(df.head(),
+                            height = '225px')
+    
   @render.text
   def att1_avalue():
     return f'{input.att1_alpha()}'
@@ -248,7 +347,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     return f'{input.att1_beta()}'
   
   @render.plot
-  @reactive.event(input.build_model)
+  @reactive.event(input.plot_param)
   def att1_dist():
     alpha = input.att1_alpha()
     beta = input.att1_beta()
@@ -276,7 +375,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     return plot.draw()
   
   @render.plot
-  @reactive.event(input.build_model)
+  @reactive.event(input.plot_param)
   def slip_dist():
     alpha = input.slip_alpha()
     beta = input.slip_beta()
@@ -303,7 +402,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     )
     return plot.draw()
   
-  @reactive.effect
+  @reactive.calc
   def create_alpha():
     n = input.attr_num()
     
@@ -336,9 +435,33 @@ def server(input: Inputs, output: Outputs, session: Session):
                                       4: 'A5'})
     return alpha
   
-  # THIS NEEDS WORK
+  @reactive.calc
+  def stan_data_dict():
+    df = loaded_data()
+    q = loaded_q()
+    alpha = create_alpha()
+    
+    if df is None or q is None or alpha is None:
+        return None
+    
+    stan_dict = {
+      'J': df.shape[0],
+      'I': df.shape[1],
+      'C': alpha.shape[0],
+      'K': q.shape[1] - 1,
+      'Y': df.to_numpy(),
+      'Q': q.iloc[:, 1:].to_numpy(),
+      'alpha': alpha.to_numpy()
+      }
+    
+    return stan_dict
+  
+  @reactive.calc
   @reactive.event(input.build_model)
   def get_inits():
+    if not input.use_init_values():
+        return None
+      
     n = input.attr_num()
     df = loaded_data()
     alpha = create_alpha()
@@ -358,7 +481,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     guess_sd = np.std(guess)
     
     if n == 2:
-      if input.use_intial_values() == True:
+      if input.use_init_values() == True:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
@@ -381,7 +504,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return None
     
     elif n == 3:
-      if input.use_intial_values() == True:
+      if input.use_init_values() == True:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
@@ -408,7 +531,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return None
     
     elif n == 4:
-      if input.use_intial_values() == True:
+      if input.use_init_values() == True:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
@@ -439,7 +562,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return None
 
     elif n == 5:
-      if input.use_initial_values() == True:
+      if input.use_init_values() == True:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
@@ -478,91 +601,378 @@ def server(input: Inputs, output: Outputs, session: Session):
     return f'{input.build_model()}'
   
   @reactive.event(input.build_model)
-  def stan_parameters_block():
+  def stan_paramchunk():
     attr_num = input.attr_num()
     
-    param = 'parameters {\nordered[C] raw_nu_ordered;\nvector<lower=0, upper=1>[I] slip;\nvector<lower=0, upper=1>[I] guess;\n'
+    param = 'parameters {\n  ordered[C] raw_nu_ordered;\n  vector<lower=0, upper=1>[I] slip;\n  vector<lower=0, upper=1>[I] guess;\n'
         
-    if attr_num == '2':
-      attr_list = ['1', '2']
-    elif attr_num == '3':
-      attr_list = ['1', '2', '3']
-    elif attr_num == '4':
-      attr_list = ['1', '2', '3', '4']
+    if attr_num == 2:
+      attr_list = [1, 2]
+    elif attr_num == 3:
+      attr_list = [1, 2, 3]
+    elif attr_num == 4:
+      attr_list = [1, 2, 3, 4]
     else:
-      attr_list = ['1', '2', '3', '4', '5']
+      attr_list = [1, 2, 3, 4, 5]
 
-    lambdas = '\n'.join([f'real<lower=0, upper=1> lambda{i};' for i in attr_list])
+    lambdas = '\n'.join([f'  real<lower=0, upper=1> lambda{i};' for i in attr_list])
 
     return param + lambdas + '\n}'
   
   @reactive.event(input.build_model)
   def stan_tparamchunk():
     attr_num = input.attr_num()
-    model_type = input.model_type()
+    type_model = input.type_model()
     
-    param = 'transformed parameters {\nsimplex[C] nu;\nmatrix[I,C] delta;\nmatrix[I,C] pi;'
+    param = 'transformed parameters {\n  simplex[C] nu;\n  matrix[I,C] delta;\n  matrix[I,C] pi;\n'
 
-    if attr_num == '2':
-      attr_list = ['1', '2']
-      attr_num = [1, 2]
-    elif attr_num == '3':
-      attr_list = ['1', '2', '3']
-      attr_num = [1, 2, 3]
-    elif attr_num == '4':
-      attr_list = ['1', '2', '3', '4']
-      attr_num = [1, 2, 3, 4]
+    if attr_num == 2:
+      attr_list = [1, 2]
+    elif attr_num == 3:
+      attr_list = [1, 2, 3]
+    elif attr_num == 4:
+      attr_list = [1, 2, 3, 4]
     else:
-      attr_list = ['1', '2', '3', '4', '5']
-      attr_num = [1, 2, 3, 4, 5]
+      attr_list = [1, 2, 3, 4, 5]
 
-    thetas = '\n'.join([f'vector[C] theta{i};' for i in attr_list])
-    theta_loop_open = '\n\nfor (c in 1:C){\n'
-    theta_cal = '\n'.join([f'  theta{i}[c] = (alpha[c, {j}] > 0) ? lambda{i} : (1 - lambda{i});' for i, j in zip(attr_list, attr_num)])
-    theta_loop_close = '\n}'
+    thetas = '\n'.join([f'  vector[C] theta{i};' for i in attr_list])
+    theta_loop_open = '\n\n  for (c in 1:C){\n'
+    theta_calc = '\n'.join([f'    theta{i}[c] = (alpha[c, {i}] > 0) ? lambda{i} : (1 - lambda{i});' for i in attr_list])
+    theta_loop_close = '\n  }'
 
-    nu_calc = f'\n\nnu = softmax(raw_nu_ordered);\nvector[C] log_nu = log(nu);\n'
+    nu_calc = f'\n\n  nu = softmax(raw_nu_ordered);\n  vector[C] log_nu = log(nu);\n\n'
 
-    if model_type == 'dino':
-      if attr_list == '2':
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]));\n}}\n}}'
-      elif attr_list == '3':
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]));\n}}\n}}'
-      elif attr_list == '4':
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]) *\n  pow(1 - theta4[c], Q[i, 4]));\n}}\n}}'
+    if type_model == 'dino':
+      if attr_num == 2:
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]));\n    }}\n  }}\n'
+      elif attr_num == 3:
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]) *\n      pow(1 - theta3[c], Q[i, 3]));\n    }}\n  }}\n'
+      elif attr_num == 4:
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]) *\n      pow(1 - theta4[c], Q[i, 4]));\n    }}\n  }}\n'
       else:
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n  pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]) *\n  pow(1 - theta4[c], Q[i, 4]) *\n  pow(1 - theta5[c], Q[i, 5]));\n}}\n}}'
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]) *\n      pow(1 - theta3[c], Q[i, 3]) *\n      pow(1 - theta4[c], Q[i, 4]) *\n      pow(1 - theta5[c], Q[i, 5]));\n    }}\n  }}\n'
 
-    elif model_type == 'dina':
-      if attr_list == '2':
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = 1 pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]);\n}}\n}}'
-      elif attr_list == '3':
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]) *\n  pow(theta3[c], Q[i, 3]);\n}}\n}}'
-      elif attr_list == '4':
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]) *\n  pow(theta3[c], Q[i, 3]) *\n  pow(theta4[c], Q[i, 4]);\n}}\n}}'
+    elif type_model == 'dina':
+      if attr_num == 2:
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]);\n    }}\n  }}\n'
+      elif attr_num == 3:
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]) *\n      pow(theta3[c], Q[i, 3]);\n    }}\n  }}\n'
+      elif attr_num == 4:
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]) *\n      pow(theta3[c], Q[i, 3]) *\n      pow(theta4[c], Q[i, 4]);\n    }}\n  }}\n'
       else:
-        delta_calc = f'for (c in 1:C){{\n  for (i in 1:I){{delta[i, c] = pow(theta1[c], Q[i, 1]) *\n  pow(theta2[c], Q[i, 2]) *\n  pow(theta3[c], Q[i, 3]) *\n  pow(theta4[c], Q[i, 4]) *\n  pow(theta5[c], Q[i, 5]);\n}}\n}}'
+        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]) *\n      pow(theta3[c], Q[i, 3]) *\n      pow(theta4[c], Q[i, 4]) *\n      pow(theta5[c], Q[i, 5]);\n    }}\n  }}\n'
 
-    pi_calc = f'for (c in 1:C){{\n  for (i in 1:I){{pi[i,c] = pow((1 - slip[i]), delta[i,c]) *\n  pow(guess[i], (1 - delta[i,c]));\n}}\n}}'
+    pi_calc = f'\n  for (c in 1:C){{\n    for (i in 1:I){{\n      pi[i,c] = pow((1 - slip[i]), delta[i,c]) *\n      pow(guess[i], (1 - delta[i,c]));\n    }}\n  }}\n}}'
 
-    trans_param = param + thetas + theta_loop_open + theta_cal + theta_loop_close + nu_calc + delta_calc + pi_calc
+    trans_param = param + thetas + theta_loop_open + theta_calc + theta_loop_close + nu_calc + delta_calc + pi_calc
 
     return trans_param
-
-  # @render.text
-  # def compile_stan():
-    
-  @render.text
-  @reactive.event(input.run_model)
-  def model_button():
-    return f'{input.run_model()}'
   
-  @render.download(filename = 'q_matrix_template.csv')
-  def download_q():
-    q = empty_q.get()
-    # if q is None or q.empty:
-    #   raise SafeException('Q-matrix is empty. Load data and edit the table first.')
-    yield q.to_csv(index = False)
+  @reactive.event(input.build_model)
+  def stan_modelchunk():
+    n = input.attr_num()
+    slip_alpha = input.slip_alpha()
+    slip_beta = input.slip_beta()
+    guess_alpha = input.guess_alpha()
+    guess_beta = input.guess_beta()
+  
+    model_start = f'model{{\n  array[C] real ps;\n  array[I] real eta;\n\n  raw_nu_ordered ~ normal(0,2);\n  for (i in 1:I){{\n    slip[i] ~ beta({slip_alpha}, {slip_beta});\n    guess[i] ~ beta({guess_alpha}, {guess_beta});\n  }}\n'
+
+    if n == 2:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n\n'
+
+    elif n == 3:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+      alpha3 = input.att3_alpha()
+      beta3 = input.att3_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n\n'
+
+    elif n == 4:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+      alpha3 = input.att3_alpha()
+      beta3 = input.att3_beta()
+      alpha4 = input.att4_alpha()
+      beta4 = input.att4_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n\n'
+
+    elif n == 5:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+      alpha3 = input.att3_alpha()
+      beta3 = input.att3_beta()
+      alpha4 = input.att4_alpha()
+      beta4 = input.att4_beta()
+      alpha5 = input.att5_alpha()
+      beta5 = input.att5_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n  lambda5 ~ beta({alpha5}, {beta5});\n\n'
+
+    model_end = f'  for (j in 1:J){{\n    for (c in 1:C){{\n      for (i in 1:I){{\n        real p = fmin(fmax(pi[i,c], 1e-9), 1 - 1e-9);\n        eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n      }}\n      ps[c] = log_nu[c] + sum(eta);\n    }}\n    target += log_sum_exp(ps);\n  }}\n}}'
+  
+    model = model_start + priors + model_end
+
+    return model
+  
+  @reactive.event(input.build_model)
+  def stan_priormodelchunk():
+    n = input.attr_num()
+    slip_alpha = input.slip_alpha()
+    slip_beta = input.slip_beta()
+    guess_alpha = input.guess_alpha()
+    guess_beta = input.guess_beta()
+  
+    model_start = f'model{{\n  array[C] real ps;\n  array[I] real eta;\n\n  raw_nu_ordered ~ normal(0,2);\n  for (i in 1:I){{\n    slip[i] ~ beta({slip_alpha}, {slip_beta});\n    guess[i] ~ beta({guess_alpha}, {guess_beta});\n  }}\n'
+
+    if n == 2:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n\n'
+
+    elif n == 3:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+      alpha3 = input.att3_alpha()
+      beta3 = input.att3_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n\n'
+
+    elif n == 4:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+      alpha3 = input.att3_alpha()
+      beta3 = input.att3_beta()
+      alpha4 = input.att4_alpha()
+      beta4 = input.att4_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n\n'
+
+    elif n == 5:
+      alpha1 = input.att1_alpha()
+      beta1 = input.att1_beta()
+      alpha2 = input.att2_alpha()
+      beta2 = input.att2_beta()
+      alpha3 = input.att3_alpha()
+      beta3 = input.att3_beta()
+      alpha4 = input.att4_alpha()
+      beta4 = input.att4_beta()
+      alpha5 = input.att5_alpha()
+      beta5 = input.att5_beta()
+
+      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n  lambda5 ~ beta({alpha5}, {beta5});\n\n'
+  
+    model = model_start + priors + '}'
+
+    return model
+
+  @reactive.effect
+  @reactive.event(input.build_model)
+  def build_stan_program():
+    chunks = [
+        stan_datachunk(),
+        stan_paramchunk(),
+        stan_tparamchunk(),
+        stan_modelchunk(),
+        stan_generatechunk()
+    ]
+    
+    stan_code = '\n\n'.join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
+    
+    if not stan_code:
+      return
+    
+    stan_dir = Path(here('stan_files'))
+    stan_dir.mkdir(parents = True,
+                   exist_ok = True)
+        
+    file_name = f'{input.type_model()}_{input.attr_num()}_attr_model.stan'
+    stan_file = stan_dir / file_name
+    stan_file.write_text(stan_code, encoding = 'utf-8')
+        
+    model = CmdStanModel(
+      stan_file = str(stan_file),
+      cpp_options = {'STAN_THREADS': 'TRUE'}
+    )
+
+    compiled_model.set(model)
+    compiled_stan_path.set(stan_file)
+    
+  @reactive.effect
+  @reactive.event(input.build_model)
+  def build_stan_prioronly():
+    chunks = [
+        stan_datachunk(),
+        stan_paramchunk(),
+        stan_tparamchunk(),
+        stan_priormodelchunk(),
+        stan_generateprior()
+    ]
+    
+    stan_code = '\n\n'.join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
+    
+    if not stan_code:
+      return
+    
+    stan_dir = Path(here('stan_files'))
+    stan_dir.mkdir(parents = True,
+                   exist_ok = True)
+        
+    file_name = f'{input.type_model()}_{input.attr_num()}_attr_model_prioronly.stan'
+    stan_file = stan_dir / file_name
+    stan_file.write_text(stan_code, encoding = 'utf-8')
+        
+    model = CmdStanModel(
+      stan_file = str(stan_file),
+      cpp_options = {'STAN_THREADS': 'TRUE'}
+    )
+
+    compiled_prior.set(model)
+    compiled_prior_path.set(stan_file)
+    
+  @reactive.effect
+  @reactive.event(input.run_model)
+  def run_model():
+    model = compiled_model.get()
+    prior_model = compiled_prior.get()
+    
+    if model is None or prior_model is None:
+      raise SafeException('Compile the Stan model first.')
+    
+    with ui.Progress(min = 1, max = 20) as p:
+        p.set(message = 'MCMC Sampling in progress',
+              detail = 'Model is running')
+    
+        if input.use_init_values() == True:
+          fit = model.sample(
+            data = stan_data_dict(),
+            inits = get_inits(),
+            adapt_delta = .99,
+            chains = 4,
+            parallel_chains = 4,
+            iter_warmup = 2000,
+            iter_sampling = 2000
+          )
+          model_fit.set(fit)
+          
+          p.set(15,
+                detail = 'Running prior-only model.')
+          
+          pfit = model.sample(
+            data = stan_data_dict(),
+            inits = get_inits(),
+            adapt_delta = .99,
+            chains = 4,
+            parallel_chains = 4,
+            iter_warmup = 2000,
+            iter_sampling = 2000
+          )
+          prior_fit.set(pfit)
+          
+          p.set(20,
+                detail = 'Completed both models.')
+
+        else:
+          fit = model.sample(
+            data = stan_data_dict(),
+            chains = 4,
+            parallel_chains = 4,
+            iter_warmup = 2000,
+            iter_sampling = 2000
+          )
+          model_fit.set(fit)
+          
+          p.set(15,
+                detail = 'Running prior-only model.')
+          
+          pfit = model.sample(
+            data = stan_data_dict(),
+            chains = 4,
+            parallel_chains = 4,
+            iter_warmup = 2000,
+            iter_sampling = 2000
+          )
+          prior_fit.set(pfit)
+          
+          p.set(20,
+                detail = 'Completed both models.')
+
+  @reactive.calc
+  def diagnostic_summary():
+    fit = model_fit.get()
+    
+    if fit is None:
+      return None
+    
+    summary_df = fit.summary()
+    
+    return pd.DataFrame(summary_df)
+
+  @render.table
+  def top_rhat_values():
+    df = diagnostic_summary()
+    
+    if df is None or 'R_hat' not in df.columns:
+        return pd.DataFrame()
+    
+    return df.sort_values('R_hat',
+                          ascending = False).head(5).reset_index()
+   
+  @reactive.calc
+  def create_idata():
+    fit = model_fit.get()
+    pfit = prior_fit.get()
+    df = loaded_data()
+    df = df.filter(regex = 'item')
+    
+    idcm = az.from_cmdstanpy(
+      posterior = fit,
+      posterior_predictive = ['y_rep'],
+      observed_data = {'Y': df},
+      log_likelihood = {'Y': 'eta'}
+      )
+    
+    idcm = idcm.rename(name_dict = {'y_rep': 'Y'},
+                       groups = ["posterior_predictive"])
+
+    idcm_prior = az.from_cmdstanpy(prior = pfit,
+                                   prior_predictive = ['y_rep'])
+
+    idcm_prior = idcm_prior.rename(
+        name_dict = {'y_rep': 'Y'},
+        groups = ['prior_predictive']
+    )
+
+    idcm.extend(idcm_prior)
+    
+    return idcm.set(idata)
+  
+  @reactive.calc
+  def guess_prior_post_plot():
+    idcm = idata.get()
+    
+    return az.plot_dist_comparison(idcm, var_names = ['guess'])
+    
     
 # --------------------------------------------------------------------------------------------------------
 
@@ -571,4 +981,13 @@ app = App(app_ui, server)
 # --------------------------------------------------------------------------------------------------------
 
 # extra
-
+  # @render.text
+  # def convergence_warning():
+  #   df = diagnostic_summary()
+  #   if df is None:
+  #       return "No model has been run yet."
+    
+  #   max_rhat = df['R_hat'].max()
+  #   if max_rhat > 1.1:
+  #       return f'⚠️ Warning: High R-hat detected ({max_rhat:.3f}). Model may not have converged.'
+  #   return "✅ Convergence looks good (all R-hat < 1.1)."
