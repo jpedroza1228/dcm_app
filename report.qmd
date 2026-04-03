@@ -1,0 +1,542 @@
+---
+title: "DCM Assessment Report"
+format:
+  typst:
+    toc-title: Contents
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    number-depth: 3
+---
+
+```{python}
+#| eval: true
+#| echo: false
+
+import pandas as pd
+import numpy as np
+import matplotlib
+import plotnine as pn
+from janitor import clean_names
+import matplotlib.pyplot as plt
+from pyhere import here
+import arviz_base as azb
+import arviz_plots as azp
+import arviz_stats as azs
+from pathlib import Path
+import tempfile
+from cmdstanpy import CmdStanModel
+import joblib
+
+pd.set_option('display.max_columns', None)
+matplotlib.rcParams.update({'savefig.bbox': 'tight'})
+```
+
+```{python}
+data = pd.read_csv(here('data_model_fit/df.csv')).drop(columns = 'Unnamed: 0')
+q = pd.read_csv(here('data_model_fit/q.csv')).drop(columns = 'Unnamed: 0')
+alpha = pd.read_csv(here('data_model_fit/alpha.csv')).drop(columns = 'Unnamed: 0')
+
+diagnose = pd.read_csv(here('diagnostics/prior_diagnostics.csv'))
+prior_diagnose = pd.read_csv(here('diagnostics/prior_diagnostics.csv'))
+
+main = joblib.load(here('data_model_fit/modfit.joblib'))
+prior = joblib.load(here('data_model_fit/modfit_prior.joblib'))
+
+fit = main[1]
+pfit = prior[1]
+
+threshold = .8
+```
+
+```{python}
+#| label: functions
+#| eval: true
+#| echo: false
+
+def acceptable_fit_stat(inference_data, func_name = ['waic', 'loo']):
+  if func_name == 'waic':
+    est = np.abs(az.waic(inference_data).iloc[0])
+    se = az.waic(inference_data).iloc[1]
+    
+    if est > se * 2.5:
+      print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
+      
+    else:
+      print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
+  elif func_name == 'loo':
+    est = np.abs(az.loo(inference_data).iloc[0])
+    se = az.loo(inference_data).iloc[1]
+    
+    if est > se * 2.5:
+      print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
+      
+    else:
+      print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
+
+def q_lower(x):
+    return x.quantile(.025)
+  
+def q_upper(x):
+    return x.quantile(.975)
+```
+
+```{python}
+stan_dict = {
+  'J': data.shape[0],
+  'I': data.shape[1],
+  'C': alpha.shape[0],
+  'K': q.shape[1] - 1,
+  'Y': data.to_numpy(),
+  'Q': q.iloc[:, 1:].to_numpy(),
+  'alpha': alpha.to_numpy()
+}
+```
+
+```{python}
+idata = azb.from_cmdstanpy(
+    posterior = fit,
+    prior = pfit,
+    posterior_predictive = ['y_rep'],
+    prior_predictive = ['y_rep'],
+    observed_data = {'y_rep': stan_dict['Y']},
+    log_likelihood = 'eta'
+    )
+```
+
+# Trace Plots
+
+```{python}
+azp.plot_trace(idata,
+               var_names = ['slip'])
+
+azp.plot_trace_dist(idata,
+                    var_names = ['slip'])
+```
+
+```{python}
+azp.plot_trace(idata,
+               var_names = ['guess'])
+
+azp.plot_trace_dist(idata,
+                    var_names = ['guess'])
+```
+
+```{python}
+azp.plot_trace(idata,
+               var_names = ['nu'])
+
+azp.plot_trace_dist(idata,
+                    var_names = ['nu'])
+```
+
+```{python}
+azp.plot_trace(idata,
+               var_names = ['lambda'],
+               filter_vars = 'like')
+
+azp.plot_trace_dist(idata,
+                    var_names = ['lambda'],
+                    filter_vars = 'like')
+```
+
+```{python}
+azp.plot_trace_dist(idata,
+                    var_names = ['theta'],
+                    filter_vars = 'like')
+```
+
+```{python}
+azp.plot_trace_dist(idata,
+                    var_names = ['pi'],
+                    filter_vars = 'like')
+```
+
+# Priors vs Posteriors
+
+```{python}
+azp.plot_prior_posterior(
+    idata,
+    var_names = ['slip'],
+    kind = 'kde'
+)
+```
+
+```{python}
+azp.plot_prior_posterior(
+    idata,
+    var_names = ['guess'],
+    kind = 'kde'
+)
+```
+
+```{python}
+azp.plot_prior_posterior(
+    idata,
+    var_names = ['lambda'],
+    filter_vars = 'like',
+    kind = 'kde'
+)
+```
+
+```{python}
+azp.plot_ppc_dist(idata,
+                  kind = 'kde',
+                  group = 'prior_predictive')
+```
+
+```{python}
+azp.plot_ppc_dist(idata,
+                  kind = 'kde',
+                  num_samples = 500)
+```
+
+```{python}
+azp.plot_ppc_dist(idata,
+                  kind = 'ecdf',
+                  group = 'prior_predictive')
+```
+
+```{python}
+azp.plot_ppc_dist(idata,
+                  kind = 'ecdf',
+                  num_samples = 500)
+```
+
+# Classes
+
+Proportions of sample in each class
+
+```{python}
+# proportions
+
+azp.plot_forest(
+    idata,
+    var_names = 'prob_attr_class'
+)
+```
+
+# Mastery
+
+Probability of skill mastery
+
+```{python}
+azp.plot_forest(
+    idata,
+    var_names = 'prob_resp_attr'
+)
+```
+
+# PPP Values (t-test)
+
+```{python}
+azp.plot_ppc_tstat(idata, t_stat = 'mean')
+```
+
+```{python}
+azp.plot_ppc_tstat(idata, t_stat = 'median')
+```
+
+```{python}
+azp.plot_ppc_tstat(idata, t_stat = 'std')
+```
+
+# Analyses from DataFrame (Change Title Later)
+
+```{python}
+fitdf = fit.draws_pd()
+```
+
+```{python}
+sg = fitdf.filter(regex = 'guess|slip').reset_index()
+sg = sg.rename(columns = {'index': 'draw'})
+
+sglong = sg.melt(id_vars = 'draw')
+sglong[['type', 'item']] = sglong['variable'].str.split('[', expand = True)
+sglong['item'] = sglong['item'].str.replace(']', '')
+sglong = sglong[['draw', 'type', 'item', 'value']]
+sglong[['draw', 'item']] = sglong[['draw', 'item']].astype(int)
+
+sgavg = sglong.groupby(['item', 'type'])
+
+sgavg = pd.DataFrame({
+  'mean': sgavg['value'].mean(),
+  'std': sgavg['value'].std(),
+  'q_lower': q_lower(sgavg['value']),
+  'q_upper': q_upper(sgavg['value'])
+}).reset_index()
+
+pn.ggplot.show(
+  pn.ggplot(sgavg,
+    pn.aes('factor(item)', 'mean'))
+  + pn.geom_errorbar(pn.aes(ymin = 'q_lower', ymax = 'q_upper'),
+  linetype = 'dashed',
+  alpha = .7)
+  + pn.geom_point(pn.aes(color = 'type'),
+                  alpha = .7)
+  + pn.coord_flip()
+  + pn.facet_wrap('type')
+  + pn.scale_color_brewer('qual', 'Dark2')
+  + pn.labs(title = 'Probability Guessing/Slipping',
+            x = 'Item',
+            y = 'Probability',
+            caption = 'Guess = Guessed and got answer correct\nSlip = Should know the answer, but got the item wrong')
+  + pn.theme_light()
+  + pn.theme(legend_position = 'none')
+)
+```
+
+# Probabilities of Each Class Getting Items Correct
+
+```{python}
+alpha['class_label'] = alpha.astype(int).astype(str).agg(''.join, axis = 1)
+alpha = alpha.reset_index()
+alpha['index'] = alpha['index'] + 1
+
+pidf = fitdf.filter(regex = 'pi').reset_index()
+pidf = pidf.rename(columns = {'index': 'draw'})
+pilong = pidf.melt(id_vars = 'draw')
+pilong['variable'] = pilong['variable'].str.replace('pi[', '')
+pilong['variable'] = pilong['variable'].str.replace(']', '')
+pilong[['item', 'latclass']] = pilong['variable'].str.split(',', expand = True)
+pilong = pilong[['draw', 'item', 'latclass', 'value']]
+pilong[['draw', 'item', 'latclass']] = pilong[['draw', 'item', 'latclass']].astype(int)
+
+piavg = pilong.groupby(['item', 'latclass'])['value'].agg(['mean', 'std', q_lower, q_upper]).reset_index()
+
+piavg = piavg.merge(alpha, 'left', left_on = 'latclass', right_on = 'index')
+
+pn.ggplot.show(
+  pn.ggplot(piavg,
+            pn.aes('item',
+                   'mean'))
+  + pn.geom_errorbar(pn.aes(ymin = 'q_lower', ymax = 'q_upper'),
+                     linetype = 'dashed',
+                     color = 'gray',
+                     alpha = .7)
+  + pn.geom_point(alpha = .7,
+                  color = 'seagreen')
+  + pn.geom_hline(yintercept = .5,
+  color = 'black',
+  linetype = 'dashed')
+  + pn.scale_x_continuous(limits = [1, piavg['item'].unique().max()],
+                          breaks = piavg['item'].unique())
+  + pn.coord_flip()
+  + pn.facet_wrap('class_label')
+  + pn.labs(title = 'Probability of Getting Items Correct',
+  subtitle = 'By Latent Class')
+  + pn.theme_light()
+  + pn.theme(legend_position = 'none')
+)
+```
+
+# Skill Mastery
+
+
+```{python}
+attrdf = fitdf.filter(regex = '^prob_resp_attr').reset_index()
+attrdf = attrdf.rename(columns = {'index': 'draw'})
+attrlong = attrdf.melt(id_vars = 'draw')
+
+attrlong['variable'] = attrlong['variable'].str.replace('prob_resp_attr[', '')
+attrlong['variable'] = attrlong['variable'].str.replace(']', '')
+attrlong[['stu', 'attr']] = attrlong['variable'].str.split(',', expand = True)
+attrlong[['draw', 'stu', 'attr']] = attrlong[['draw', 'stu', 'attr']].astype(int)
+attrlong = attrlong[['draw', 'stu', 'attr', 'value']]
+
+attravg = attrlong.groupby(['stu', 'attr'])['value'].agg(['mean', 'std', q_lower, q_upper]).reset_index()
+
+pn.ggplot.show(
+  pn.ggplot(attravg,
+            pn.aes('stu',
+                   'mean'))
+  + pn.geom_errorbar(pn.aes(ymin = 'q_lower', ymax = 'q_upper'),
+                     color = 'seagreen',
+                     alpha = .1)
+  + pn.geom_point(alpha = .7,
+                  color = 'seagreen')
+  + pn.geom_hline(yintercept = threshold,
+                  color = 'black',
+                  linetype = 'dashed')
+  + pn.facet_wrap('attr')
+  + pn.theme_light()
+  + pn.theme(legend_position = 'none',
+             axis_text_x = pn.element_blank())
+)
+```
+
+```{python}
+
+attravg['mastery'] = np.where(attravg['mean'] > threshold, 1, 0)
+
+attr_w = attravg.pivot(index = 'stu', columns = 'attr', values = 'mastery').reset_index()
+
+from great_tables import GT as gt
+
+gt.show(gt(attr_w).tab_header(title = 'Proficiency in Skills'))
+```
+
+# Reliability
+
+```{python}
+
+attravg['acc_comp'] = attravg['mean'].apply(lambda p: max(p, 1 - p))
+attravg['cons_comp'] = attravg['mean'].apply(lambda p: p**2 + (1 - p)**2)
+
+reliability = attravg.groupby('attr').agg(
+    accuracy=('acc_comp', 'mean'),
+    consistency=('cons_comp', 'mean')
+).reset_index()
+
+gt.show(gt(reliability.round(3)).tab_header(title = 'Accuracy & Consistency'))
+```
+
+# Latent Classes
+
+
+```{python}
+attr_class = fitdf.filter(regex = '^prob_resp_class').reset_index()
+attr_class = attr_class.rename(columns = {'index': 'draw'})
+class_long = attr_class.melt(id_vars = 'draw')
+
+class_long['variable'] = class_long['variable'].str.replace('prob_resp_class[', '')
+class_long['variable'] = class_long['variable'].str.replace(']', '')
+class_long[['stu', 'latclass']] = class_long['variable'].str.split(',', expand = True)
+class_long[['draw', 'stu', 'latclass']] = class_long[['draw', 'stu', 'latclass']].astype(int)
+class_long = class_long[['draw', 'stu', 'latclass', 'value']]
+
+class_avg = class_long.groupby(['stu', 'latclass'])['value'].mean().reset_index()
+
+class_stu_max = class_avg.groupby('stu')['value'].max().reset_index()
+
+class_max = class_avg.merge(class_stu_max, 'inner')
+
+class_max_df = class_max['latclass'].value_counts().reset_index()
+class_max_df['latclass'] = class_max_df['latclass'].astype(object)
+class_max_df = class_max_df.merge(alpha, 'left', left_on = 'latclass', right_on = 'index')
+class_max_df = class_max_df[['class_label', 'count']]
+
+gt.show(gt(class_max_df).tab_header(title = 'Counts in Latent Classes'))
+```
+
+### PPP
+
+```{python}
+#| eval: false
+#| echo: true
+#| label: needs work
+
+ydcm = dcmdf.filter(regex = '^y_rep')
+
+# calculations for odds ratios/conditional probabilities
+ydcm_long = ydcm.melt()
+
+ydcm_long['variable'] = ydcm_long['variable'].str.replace('y_rep[', '')
+ydcm_long['variable'] = ydcm_long['variable'].str.replace(']', '')
+ydcm_long[['stu', 'item']] = ydcm_long['variable'].str.split(',', expand = True)
+ydcm_long = ydcm_long[['stu', 'item', 'value']]
+ydcm_long[['stu', 'item']] = ydcm_long[['stu', 'item']].astype(int)
+ydcm_long['draw'] = ydcm_long.groupby(['stu', 'item']).cumcount()
+
+ydcm_wide = ydcm_long.pivot(index = ['stu', 'draw'], columns = 'item', values = 'value')
+ydcm_wide = ydcm_wide.reset_index()
+ydcm_wide.columns = ['stu', 'draw', 'item1', 'item2', 'item3', 'item4', 'item5', 'item6', 'item7', 'item8', 'item9', 'item10', 'item11', 'item12', 'item13', 'item14', 'item15', 'item16', 'item17', 'item18', 'item19', 'item20', 'item21', 'item22', 'item23', 'item24']
+
+ydcm_wide['total'] = ydcm_wide.filter(regex = 'item').sum(axis = 1)
+ydcm_wide_count = ydcm_wide.groupby('draw')['total'].value_counts().reset_index()
+
+ydcm_scores = ydcm_wide_count.groupby('total')['count'].agg(
+    count = 'mean',
+    lower = q_lower,
+    upper = q_upper
+).reset_index()
+
+ydcm_wide_count['type'] = 'draw_counts'
+ydcm_scores['type'] = 'avg_counts'
+
+ydcm_wide_count['count'] = ydcm_wide_count['count'].astype(float)
+ydcm_wide_count = ydcm_wide_count.merge(ydcm_scores, 'outer')
+
+y_item['total'] = y_item.sum(axis = 1)
+y_item_count = y_item['total'].value_counts().reset_index()
+y_item_count['type'] = 'actual_counts'
+y_item_count['count'] = y_item_count['count'].astype(float)
+
+ydcm_wide_count = ydcm_wide_count.merge(y_item_count, 'outer')
+
+ydcm_wide_count.head()
+
+pn.ggplot.show(
+  pn.ggplot(ydcm_wide_count.loc[ydcm_wide_count['type'] != 'draw_counts'],
+            pn.aes('total',
+                   'count'))
+  + pn.geom_errorbar(pn.aes(ymin = 'lower',
+                            ymax = 'upper'),
+                     alpha = .5,
+                     linetype = 'dashed')
+  + pn.geom_point(pn.aes(color = 'type'))
+  + pn.scale_color_brewer('qual', 'Dark2')
+  + pn.scale_x_continuous(limits = [1, piavg['item'].unique().max()],
+                          breaks = piavg['item'].unique())
+)
+
+y_describe = y_item.filter(regex = 'item').agg(['mean', 'std']).reset_index()
+y_describe.drop(columns = 'index').transpose().round(2)
+
+stu_n = y_item.shape[0]
+
+t_stats_dict = {}
+
+# Loop from 1 to 7
+for i in range(1, 24 + 1):
+    item_name = f"item{i}"
+    
+    # Extract mean and std for the specific item
+    # We use .values[0] to get the scalar number out of the filtered dataframe
+    avg = y_describe.loc[y_describe['index'] == 'mean', item_name].values[0]
+    std = y_describe.loc[y_describe['index'] == 'std', item_name].values[0]
+    
+    # Calculate the observed t-value
+    # Formula: T = avg / (std / sqrt(n))
+    t_val = avg / ((std + 1e-10) / np.sqrt(stu_n))
+    
+    # Store it in our dictionary
+    t_stats_dict[item_name] = t_val
+
+# Convert the dictionary into a final Pandas Series
+obs_t_series = pd.Series(t_stats_dict)
+
+obs_t_series = obs_t_series.reset_index()
+obs_t_series = obs_t_series.rename(columns = {'index': 'item',
+                                              0: 'observed_t'})
+obs_t_series['item'] = obs_t_series['item'].str.replace('item', '')
+obs_t_series['item'] = obs_t_series['item'].astype(float)
+
+y_long_avg = ydcm_long.groupby(['item', 'draw'])['value'].agg(['mean', 'std']).reset_index()
+y_long_avg['n'] = stu_n
+
+y_long_avg['t_draw'] = y_long_avg['mean']/((y_long_avg['std'] + 1e-10)/np.sqrt(y_long_avg['n']))
+
+y_long_avg = y_long_avg.merge(obs_t_series, 'inner', 'item')
+
+y_long_avg['t_draw'].describe()
+
+t_compare_list = [np.mean(y_long_avg.loc[(y_long_avg['item'] == i), 't_draw'] > y_long_avg.loc[(y_long_avg['item'] == i), 'observed_t']) for i in np.arange(25)]
+
+pd.DataFrame({'item': np.arange(25),
+              't_prop_over': t_compare_list})
+
+pn.ggplot.show(
+  pn.ggplot(y_long_avg.loc[y_long_avg['item'] == 11],
+            pn.aes('t_draw'))
+  + pn.geom_density(color = 'black',
+                      fill = jpcolor,
+                      alpha = .5)
+  + pn.geom_vline(pn.aes(xintercept = 'observed_t'),
+                  color = 'red',
+                  linetype = 'dashed')
+)
+
+pd.DataFrame({'item': np.arange(25),
+              't_prop_over': t_compare_list}).to_csv(here('diagnostics/quiz4_ppmc_item_level.csv'))
+```

@@ -4,13 +4,18 @@ import numpy as np
 import plotnine as pn
 # from great_tables import GT
 from janitor import clean_names
+import matplotlib.pyplot as plt
 from pyhere import here
-import arviz as az
+import arviz_base as azb
+import arviz_plots as azp
+import arviz_stats as azs
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 from shiny.types import SafeException
 import shinyswatch
 from pathlib import Path
+import tempfile
 from cmdstanpy import CmdStanModel
+import joblib
 
 pd.set_option('display.max_columns', None)
 matplotlib.rcParams.update({'savefig.bbox': 'tight'})
@@ -32,31 +37,25 @@ def stan_generateprior():
   
   return quant
 
-def q_lower(x):
-    return x.quantile(.025)
-  
-def q_upper(x):
-    return x.quantile(.975)
-
-def acceptable_fit_stat(inference_data, func_name = ['waic', 'loo']):
-  if func_name == 'waic':
-    est = np.abs(az.waic(inference_data).iloc[0])
-    se = az.waic(inference_data).iloc[1]
+# def acceptable_fit_stat(inference_data, func_name = ['waic', 'loo']):
+#   if func_name == 'waic':
+#     est = np.abs(az.waic(inference_data).iloc[0])
+#     se = az.waic(inference_data).iloc[1]
     
-    if est > se * 2.5:
-      print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
+#     if est > se * 2.5:
+#       print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
       
-    else:
-      print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
-  elif func_name == 'loo':
-    est = np.abs(az.loo(inference_data).iloc[0])
-    se = az.loo(inference_data).iloc[1]
+#     else:
+#       print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
+#   elif func_name == 'loo':
+#     est = np.abs(az.loo(inference_data).iloc[0])
+#     se = az.loo(inference_data).iloc[1]
     
-    if est > se * 2.5:
-      print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
+#     if est > se * 2.5:
+#       print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
       
-    else:
-      print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
+#     else:
+#       print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
 
 # --------------------------------------------------------------------------------------------------------
 
@@ -138,50 +137,11 @@ app_ui = ui.page_navbar(
                  col_widths = (6, 6)
                  )
                ),
-  ui.nav_menu(
-    'Priors and Posteriors',
-    ui.nav_panel('Model Diagnostics (Everything Currently)',
+    ui.nav_panel('Quick Model Diagnostics',
                ui.page_fluid(
-                 ui.output_table('top_rhat_values'),
-                 ui.output_plot('guess_prior_post_plot')
+                 ui.output_table('top_rhat_values')
                )
-              #  ui.layout_columns(
-              #    ui.page_fluid(
-              #      ui.output_plot('overall_ppmc'),
-              #      ui.output_plot('overall_cum_ppmc')
-              #    ),
-              #    ui.page_fluid(
-              #      ui.output_data_frame('diagnostics'),
-              #      ui.output_data_frame('ppmc_diag')
-              #    ),
-              #    col_widths = (6, 6)
-              #  )
                ),
-  # ui.nav_panel('Assessment Evaluation',
-  #              ui.layout_columns(
-  #                ui.page_fluid(
-  #                  ui.output_plot('guess_slip_plot'),
-  #                  ui.output_plot('skill_plot')
-  #                ),
-  #                ui.page_fluid(
-  #                  ui.output_data_frame('mastery_df'),
-  #                  ui.output_data_frame('num_mastery')
-  #                ),
-  #                col_widths = (6, 6)
-  #              )
-  #              ),
-  # ui.nav_panel('Model Accuracy',
-              #  ui.layout_columns(
-              #    ui.page_fluid(
-              #      ui.output_plot('actual_v_model_correct')
-              #    ),
-              #    ui.page_fluid(
-              #      ui.output_data_frame('model_reliability')
-              #    ),
-              #    col_widths = (6, 6)
-              #  )
-              #  ),
-  ),
   ui.nav_spacer(),
   ui.nav_control(ui.input_dark_mode()),
   sidebar = ui.sidebar(
@@ -236,7 +196,7 @@ app_ui = ui.page_navbar(
     ui.input_action_button('plot_param', 'Plot priors'),
     ui.hr(),
     ui.input_action_button('build_model', 'Update parameters'),
-    ui.input_slider('threshold', 'Probability Threshold for Skill Attainment (Higher means less false positives)', 0, 1, .8, step = .05),
+    # ui.input_slider('threshold', 'Probability Threshold for Skill Attainment (Higher means less false positives)', 0, 1, .8, step = .05),
     ui.input_action_button('run_model', 'Run model'),
     ui.input_checkbox('use_init_values', 'Check this box if model does not converge', False)
   ),
@@ -255,7 +215,7 @@ def server(input: Inputs, output: Outputs, session: Session):
   compiled_model = reactive.Value(None)
   compiled_stan_path = reactive.Value(None)
   model_fit = reactive.Value(None)
-  idata = reactive.Value(None)
+  # idata = reactive.Value(None)
   
   compiled_prior = reactive.Value(None)
   compiled_prior_path = reactive.Value(None)
@@ -806,7 +766,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     stan_dir.mkdir(parents = True,
                    exist_ok = True)
         
-    file_name = f'{input.type_model()}_{input.attr_num()}_attr_model.stan'
+    file_name = 'model.stan'
     stan_file = stan_dir / file_name
     stan_file.write_text(stan_code, encoding = 'utf-8')
         
@@ -838,7 +798,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     stan_dir.mkdir(parents = True,
                    exist_ok = True)
         
-    file_name = f'{input.type_model()}_{input.attr_num()}_attr_model_prioronly.stan'
+    file_name = 'prior_model.stan'
     stan_file = stan_dir / file_name
     stan_file.write_text(stan_code, encoding = 'utf-8')
         
@@ -920,14 +880,56 @@ def server(input: Inputs, output: Outputs, session: Session):
   @reactive.calc
   def diagnostic_summary():
     fit = model_fit.get()
+    pfit = prior_fit.get()
     
     if fit is None:
       return None
     
-    summary_df = fit.summary()
+    if pfit is None:
+      return None
     
-    return pd.DataFrame(summary_df)
+    diag_dir = Path(here('diagnostics'))
+    diag_dir.mkdir(parents = True,
+                   exist_ok = True)
+    
+    summary_df = pd.DataFrame(fit.summary())
+    prior_df = pd.DataFrame(pfit.summary())
+    
+    summary_df.to_csv(here(f'{diag_dir}/model_diagnostics.csv'))
+    prior_df.to_csv(here(f'{diag_dir}/prior_diagnostics.csv'))
+    
+    return summary_df
 
+  @reactive.effect
+  @reactive.event(input.run_model)
+  def save_data_models_fits():
+    df = loaded_data()
+    q = loaded_q()
+    n = input.attr_num()
+    alpha = create_alpha()
+    
+    model = compiled_model.get()
+    prior_model = compiled_prior.get()
+    fit = model_fit.get()
+    pfit = prior_fit.get()
+    
+    job_dir = Path(here('data_model_fit'))
+    job_dir.mkdir(parents = True,
+                   exist_ok = True)
+    
+    df.to_csv(f'{job_dir}/df.csv')
+    q.to_csv(f'{job_dir}/q.csv')
+    alpha.to_csv(f'{job_dir}/alpha.csv')
+    
+    (joblib.dump([model, fit],
+                 here(f'{job_dir}/modfit.joblib'),
+                 compress = 3))
+    
+    (joblib.dump([prior_model, pfit],
+                 here(f'{job_dir}/modfit_prior.joblib'),
+                 compress = 3))
+    
+  
   @render.table
   def top_rhat_values():
     df = diagnostic_summary()
@@ -937,41 +939,132 @@ def server(input: Inputs, output: Outputs, session: Session):
     
     return df.sort_values('R_hat',
                           ascending = False).head(5).reset_index()
-   
-  @reactive.calc
-  def create_idata():
-    fit = model_fit.get()
-    pfit = prior_fit.get()
-    df = loaded_data()
-    df = df.filter(regex = 'item')
-    
-    idcm = az.from_cmdstanpy(
-      posterior = fit,
-      posterior_predictive = ['y_rep'],
-      observed_data = {'Y': df},
-      log_likelihood = {'Y': 'eta'}
-      )
-    
-    idcm = idcm.rename(name_dict = {'y_rep': 'Y'},
-                       groups = ["posterior_predictive"])
 
-    idcm_prior = az.from_cmdstanpy(prior = pfit,
-                                   prior_predictive = ['y_rep'])
+# save diagnostics
 
-    idcm_prior = idcm_prior.rename(
-        name_dict = {'y_rep': 'Y'},
-        groups = ['prior_predictive']
-    )
+# save model and fit
 
-    idcm.extend(idcm_prior)
+  # @reactive.calc
+  # def create_idata():
+  #   fit = model_fit.get()
+  #   pfit = prior_fit.get()
+  #   df = loaded_data()
+  #   df = df.filter(regex = 'item')
     
-    return idcm.set(idata)
+  #   idcm = azb.from_cmdstanpy(
+  #     posterior = fit,
+  #     prior = pfit,
+  #     posterior_predictive = ['y_rep'],
+  #     prior_predictive = ['y_rep'],
+  #     observed_data = {'y_rep': df},
+  #     log_likelihood = {'Y': 'eta'}
+  #     )
+    
+  #   # idata.set(idcm)   # set the reactive.Value correctly
+  #   return idcm 
   
-  @reactive.calc
-  def guess_prior_post_plot():
-    idcm = idata.get()
+  # @render.image
+  # def guess_prior_post_plot():
+  #   # idcm = idata.get()
+  #   idcm = create_idata()
     
-    return az.plot_dist_comparison(idcm, var_names = ['guess'])
+  #   guess_plot = azp.plot_prior_posterior(idcm,
+  #                                         var_names = ['guess'],
+  #                                         kind = 'kde',
+  #                                         backend = 'matplotlib')
+    
+  #   azp_dir = Path(here('arviz_plots'))
+  #   azp_dir.mkdir(parents = True,
+  #                  exist_ok = True)
+        
+  #   file_name = 'guess_plots.png'
+  #   plot_file = azp_dir / file_name
+    
+  #   fig = plt.gcf()
+  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
+  #   plt.close(fig)  # Crucial for memory management
+        
+  #   return {'src': str(plot_file), 'width': '600px'}
+  
+  # @render.image
+  # def slip_prior_post_plot():
+  #   # idcm = idata.get()
+  #   idcm = create_idata()
+    
+  #   slip_plot = azp.plot_prior_posterior(idcm,
+  #                                         var_names = ['slip'],
+  #                                         kind = 'kde')
+    
+  #   azp_dir = Path(here('arviz_plots'))
+  #   azp_dir.mkdir(parents = True,
+  #                  exist_ok = True)
+        
+  #   file_name = 'slip_plots.png'
+  #   plot_file = azp_dir / file_name
+    
+  #   fig = plt.gcf()
+  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
+  #   plt.close(fig)  # Crucial for memory management
+        
+  #   return {'src': str(plot_file), 'width': '600px'}
+  
+  # @render.image
+  # def nu_prior_post_plot():
+  #   # idcm = idata.get()
+  #   idcm = create_idata()
+    
+  #   nu_plot = azp.plot_prior_posterior(idcm,
+  #                                         var_names = ['nu'],
+  #                                         kind = 'kde')
+    
+  #   azp_dir = Path(here('arviz_plots'))
+  #   azp_dir.mkdir(parents = True,
+  #                  exist_ok = True)
+        
+  #   file_name = 'nu_plots.png'
+  #   plot_file = azp_dir / file_name
+    
+  #   fig = plt.gcf()
+  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
+  #   plt.close(fig)  # Crucial for memory management
+        
+  #   return {'src': str(plot_file), 'width': '600px'}
+  
+  # @render.image
+  # def lambda_prior_post_plot():
+  #   # idcm = idata.get()
+  #   idcm = create_idata()
+  #   n = input.attr_num()
+    
+  #   if n == 2:
+  #     lambda_plot = azp.plot_prior_posterior(idcm,
+  #                                            var_names = ['lambda1', 'lambda2'],
+  #                                            kind = 'kde')
+  #   elif n == 3:
+  #     lambda_plot = azp.plot_prior_posterior(idcm,
+  #                                            var_names = ['lambda1', 'lambda2', 'lambda3'],
+  #                                            kind = 'kde')
+  #   elif n == 4:
+  #     lambda_plot = azp.plot_prior_posterior(idcm,
+  #                                            var_names = ['lambda1', 'lambda2', 'lambda3', 'lambda4'],
+  #                                            kind = 'kde')
+  #   elif n == 5:
+  #     lambda_plot = azp.plot_prior_posterior(idcm,
+  #                                            var_names = ['lambda1', 'lambda2', 'lambda3', 'lambda4', 'lambda5'],
+  #                                            kind = 'kde')
+      
+  #   azp_dir = Path(here('arviz_plots'))
+  #   azp_dir.mkdir(parents = True,
+  #                  exist_ok = True)
+        
+  #   file_name = 'lambda_plots.png'
+  #   plot_file = azp_dir / file_name
+    
+  #   fig = plt.gcf()
+  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
+  #   plt.close(fig)  # Crucial for memory management
+        
+  #   return {'src': str(plot_file), 'width': '600px'}
     
     
 # --------------------------------------------------------------------------------------------------------
@@ -980,14 +1073,4 @@ app = App(app_ui, server)
 
 # --------------------------------------------------------------------------------------------------------
 
-# extra
-  # @render.text
-  # def convergence_warning():
-  #   df = diagnostic_summary()
-  #   if df is None:
-  #       return "No model has been run yet."
-    
-  #   max_rhat = df['R_hat'].max()
-  #   if max_rhat > 1.1:
-  #       return f'⚠️ Warning: High R-hat detected ({max_rhat:.3f}). Model may not have converged.'
-  #   return "✅ Convergence looks good (all R-hat < 1.1)."
+# 
