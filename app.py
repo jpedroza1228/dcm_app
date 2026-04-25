@@ -28,7 +28,7 @@ def stan_datachunk():
   return data
 
 def stan_generatechunk():
-  quant = f'generated quantities {{\n  matrix[J,C] prob_resp_class;\n  matrix[J,K] prob_resp_attr;\n  array[I] real eta;\n  row_vector[C] prob_joint;\n  array[C] real prob_attr_class;\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n   for (c in 1:C){{\n     for(i in 1:I){{\n       real p = fmin(fmax(pi[i,c], 1e-9), 1 - 1e-9);\n       eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n     }}\n     prob_joint[c] = exp(log_nu[c]) * exp(sum(eta));\n   }}\n   prob_resp_class[j] = prob_joint/sum(prob_joint);\n  }}\n\n  for (j in 1:J){{\n    for (k in 1:K){{\n      for (c in 1:C){{\n        prob_attr_class[c] = prob_resp_class[j,c] * alpha[c,k];\n      }}\n      prob_resp_attr[j,k] = sum(prob_attr_class);\n    }}\n  }}\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+  quant = f'generated quantities {{\n  matrix[J,C] prob_resp_class;\n  matrix[J,K] prob_resp_attr;\n  array[I] real eta;\n  row_vector[C] prob_joint;\n  vector[J] log_lik;\n  array[C] real prob_attr_class;\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n   for (c in 1:C){{\n     for(i in 1:I){{\n       real p = fmin(fmax(pi[i,c], 1e-9), 1 - 1e-9);\n       eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n     }}\n     prob_joint[c] = exp(log_nu[c]) * exp(sum(eta));\n     log_lik[j] = log_sum_exp(prob_joint);\n   }}\n   prob_resp_class[j] = prob_joint/sum(prob_joint);\n  }}\n\n  for (j in 1:J){{\n    for (k in 1:K){{\n      for (c in 1:C){{\n        prob_attr_class[c] = prob_resp_class[j,c] * alpha[c,k];\n      }}\n      prob_resp_attr[j,k] = sum(prob_attr_class);\n    }}\n  }}\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
   
   return quant
 
@@ -128,7 +128,7 @@ app_ui = ui.page_navbar(
                    ui.output_plot('slip_dist')
                    ),
                  ui.page_fluid(
-                  #  ui.h6('Top 5 rows of dataset'),
+                   ui.h6('Top 5 rows of dataset'),
                    ui.output_data_frame('dataset'),
                    ui.hr(),
                    ui.h6('Uploaded Q-Matrix'),
@@ -155,21 +155,23 @@ app_ui = ui.page_navbar(
       'input.have_df',
       ui.input_file('load', 'Load in your data'),
     ),
-    ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2), # will have to change this to be reactive for # of columns in Q-matrix
     ui.input_checkbox('have_qmatrix', 'I have a Q-matrix', False),
     ui.panel_conditional(
       '!input.have_qmatrix',
+      ui.input_slider('attr_num', 'Number of skills in your assessment', 2, 5, 2),
       ui.download_button('download_q', 'Generate Q-Matrix Template')
     ),
     ui.panel_conditional(
       'input.have_qmatrix',
       ui.input_file('qload', 'Load in your Q-Matrix')
     ),
+    ui.hr(),
     ui.input_select('type_model',
                     'Choose a Model Type:',
                     {'dino': 'DINO',
                      'dina': 'DINA'}
     ),
+    ui.h6('How likely are students to have the skill?'),
     ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 20, step = .5),
     ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 5, step = .5),
     ui.input_checkbox('all_same_prior', 'Keep all the same skill priors as above', True),
@@ -185,11 +187,11 @@ app_ui = ui.page_navbar(
       ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', .5, 50, 5, step = .5),
     ),
     # ui.hr(),
-    ui.h6('How likely students are to have the skill, but get question incorrect (slip)'),
+    ui.h6('How likely are students to slip?'),
     ui.input_slider('slip_alpha', 'Beta Distribution - Slip: Alpha', .5, 50, 5, step = .5),
     ui.input_slider('slip_beta', 'Beta Distribution - Slip: Beta', .5, 50, 20, step = .5),
     # ui.hr(),
-    ui.h6('How likely students are to not have the skill, but get question correct (guess)'),
+    ui.h6('How likely are students to guess?'),
     ui.input_slider('guess_alpha', 'Beta Distribution - Guess: Alpha', .5, 50, 5, step = .5),
     ui.input_slider('guess_beta', 'Beta Distribution - Guess: Beta', .5, 50, 20, step = .5),
     # ui.hr(),
@@ -263,6 +265,13 @@ def server(input: Inputs, output: Outputs, session: Session):
       q = pd.DataFrame(0, index = df.columns, columns = attr_cols).reset_index()
       q.rename(columns = {'index': 'Item'}, inplace = True)
       empty_q.set(q)
+      
+  @render.download(filename = 'q_matrix_template.csv')
+  def download_q():
+    q = empty_q.get()
+    # if q is None or q.empty:
+    #   raise SafeException('Q-matrix is empty. Load data and edit the table first.')
+    yield q.to_csv(index = False)
     
   @reactive.calc
   def loaded_q():
@@ -282,13 +291,6 @@ def server(input: Inputs, output: Outputs, session: Session):
     if q is None:
         return None
     return render.DataTable(q)
-  
-  @render.download(filename = 'q_matrix_template.csv')
-  def download_q():
-    q = empty_q.get()
-    # if q is None or q.empty:
-    #   raise SafeException('Q-matrix is empty. Load data and edit the table first.')
-    yield q.to_csv(index = False)
   
   @render.data_frame
   def dataset():
@@ -364,7 +366,8 @@ def server(input: Inputs, output: Outputs, session: Session):
   
   @reactive.calc
   def create_alpha():
-    n = input.attr_num()
+    q = loaded_q()
+    n = q.shape[1] - 1
     
     if n == 2:
       alpha = pd.DataFrame([(a, b) for a in np.arange(2) for b in np.arange(2)])
@@ -562,7 +565,8 @@ def server(input: Inputs, output: Outputs, session: Session):
   
   @reactive.event(input.build_model)
   def stan_paramchunk():
-    attr_num = input.attr_num()
+    q = loaded_q()
+    attr_num = q.shape[1] - 1
     
     param = 'parameters {\n  ordered[C] raw_nu_ordered;\n  vector<lower=0, upper=1>[I] slip;\n  vector<lower=0, upper=1>[I] guess;\n'
         
@@ -581,7 +585,8 @@ def server(input: Inputs, output: Outputs, session: Session):
   
   @reactive.event(input.build_model)
   def stan_tparamchunk():
-    attr_num = input.attr_num()
+    q = loaded_q()
+    attr_num = q.shape[1] - 1
     type_model = input.type_model()
     
     param = 'transformed parameters {\n  simplex[C] nu;\n  matrix[I,C] delta;\n  matrix[I,C] pi;\n'
@@ -630,7 +635,8 @@ def server(input: Inputs, output: Outputs, session: Session):
   
   @reactive.event(input.build_model)
   def stan_modelchunk():
-    n = input.attr_num()
+    q = loaded_q()
+    n = q.shape[1] - 1
     slip_alpha = input.slip_alpha()
     slip_beta = input.slip_beta()
     guess_alpha = input.guess_alpha()
@@ -690,7 +696,8 @@ def server(input: Inputs, output: Outputs, session: Session):
   
   @reactive.event(input.build_model)
   def stan_priormodelchunk():
-    n = input.attr_num()
+    q = loaded_q()
+    n = q.shape[1] - 1
     slip_alpha = input.slip_alpha()
     slip_beta = input.slip_beta()
     guess_alpha = input.guess_alpha()
@@ -905,7 +912,7 @@ def server(input: Inputs, output: Outputs, session: Session):
   def save_data_models_fits():
     df = loaded_data()
     q = loaded_q()
-    n = input.attr_num()
+    n = q.shape[1] - 1
     alpha = create_alpha()
     
     model = compiled_model.get()
