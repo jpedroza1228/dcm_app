@@ -1,11 +1,9 @@
 import pandas as pd
-import matplotlib
 import numpy as np
-import plotnine as pn
 # from great_tables import GT
-from janitor import clean_names
+import matplotlib
 import matplotlib.pyplot as plt
-from pyhere import here
+import plotnine as pn
 import arviz_base as azb
 import arviz_plots as azp
 import arviz_stats as azs
@@ -14,8 +12,14 @@ from shiny.types import SafeException
 import shinyswatch
 from pathlib import Path
 import tempfile
+import subprocess
+import papermill as pm
+import os
+import sys
 from cmdstanpy import CmdStanModel
 import joblib
+from janitor import clean_names
+from pyhere import here
 
 pd.set_option('display.max_columns', None)
 matplotlib.rcParams.update({'savefig.bbox': 'tight'})
@@ -36,26 +40,6 @@ def stan_generateprior():
   quant = f'generated quantities {{\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
   
   return quant
-
-# def acceptable_fit_stat(inference_data, func_name = ['waic', 'loo']):
-#   if func_name == 'waic':
-#     est = np.abs(az.waic(inference_data).iloc[0])
-#     se = az.waic(inference_data).iloc[1]
-    
-#     if est > se * 2.5:
-#       print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
-      
-#     else:
-#       print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
-#   elif func_name == 'loo':
-#     est = np.abs(az.loo(inference_data).iloc[0])
-#     se = az.loo(inference_data).iloc[1]
-    
-#     if est > se * 2.5:
-#       print('Absolute difference is greater than 2.5 x the standard error of the difference. Model is acceptable.')
-      
-#     else:
-#       print('Absolute difference is not greater than 2.5 x the standard error of the difference. Model is not acceptable.')
 
 # --------------------------------------------------------------------------------------------------------
 
@@ -197,10 +181,12 @@ app_ui = ui.page_navbar(
     # ui.hr(),
     ui.input_action_button('plot_param', 'Plot priors'),
     ui.hr(),
-    ui.input_action_button('build_model', 'Update parameters'),
-    # ui.input_slider('threshold', 'Probability Threshold for Skill Attainment (Higher means less false positives)', 0, 1, .8, step = .05),
+    ui.input_action_button('build_model', 'Update parameters (after choosing priors)'),
     ui.input_action_button('run_model', 'Run model'),
-    ui.input_checkbox('use_init_values', 'Check this box if model does not converge', False)
+    ui.input_checkbox('use_init_values', 'Check this box if model does not converge', False),
+    ui.input_slider('threshold',
+                    'Probability threshold to decide is respondents have skill', 0.5, 0.95, 0.8, step = .01),
+    ui.download_button('download_report', 'Download Report')
   ),
   title = '"Small" Sample DCMs',  
   id = 'page',
@@ -842,7 +828,7 @@ def server(input: Inputs, output: Outputs, session: Session):
           )
           model_fit.set(fit)
           
-          p.set(15,
+          p.set(3,
                 detail = 'Running prior-only model.')
           
           pfit = model.sample(
@@ -869,7 +855,7 @@ def server(input: Inputs, output: Outputs, session: Session):
           )
           model_fit.set(fit)
           
-          p.set(15,
+          p.set(3,
                 detail = 'Running prior-only model.')
           
           pfit = model.sample(
@@ -946,134 +932,48 @@ def server(input: Inputs, output: Outputs, session: Session):
     
     return df.sort_values('R_hat',
                           ascending = False).head(5).reset_index()
+  
+  @render.download(filename = 'dcm_report.pdf')
+  def download_report():
+    if model_fit.get() is None or prior_fit.get() is None:
+        raise SafeException('Run the model first so report inputs exist.')
 
-# save diagnostics
+    with ui.Progress(min = 0, max = 100) as p:
+        p.set(message='Rendering report...', detail = 'Preparing parameters', value = 10)
+        
+        report_name = 'report.qmd'
+        out_name = 'dcm_report.pdf'
+        
+        qmd_path = Path(here(f'report/{report_name}'))
+        if not qmd_path.exists():
+            raise SafeException('report/report.qmd was not found.')
 
-# save model and fit
+        out_dir = Path(here('report'))
+        out_dir.mkdir(parents = True, exist_ok = True)
 
-  # @reactive.calc
-  # def create_idata():
-  #   fit = model_fit.get()
-  #   pfit = prior_fit.get()
-  #   df = loaded_data()
-  #   df = df.filter(regex = 'item')
-    
-  #   idcm = azb.from_cmdstanpy(
-  #     posterior = fit,
-  #     prior = pfit,
-  #     posterior_predictive = ['y_rep'],
-  #     prior_predictive = ['y_rep'],
-  #     observed_data = {'y_rep': df},
-  #     log_likelihood = {'Y': 'eta'}
-  #     )
-    
-  #   # idata.set(idcm)   # set the reactive.Value correctly
-  #   return idcm 
-  
-  # @render.image
-  # def guess_prior_post_plot():
-  #   # idcm = idata.get()
-  #   idcm = create_idata()
-    
-  #   guess_plot = azp.plot_prior_posterior(idcm,
-  #                                         var_names = ['guess'],
-  #                                         kind = 'kde',
-  #                                         backend = 'matplotlib')
-    
-  #   azp_dir = Path(here('arviz_plots'))
-  #   azp_dir.mkdir(parents = True,
-  #                  exist_ok = True)
+        cmd = [
+            'quarto', 'render', str(qmd_path),
+            '--to', 'typst',
+            '-P', f'threshold:{input.threshold()}',
+            '--output', out_name,
+            '--output-dir', str(out_dir)
+        ]
+
+        p.set(detail = 'Generating document with Quarto...', value = 50)
         
-  #   file_name = 'guess_plots.png'
-  #   plot_file = azp_dir / file_name
-    
-  #   fig = plt.gcf()
-  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
-  #   plt.close(fig)  # Crucial for memory management
+        env = os.environ.copy()
+        env['QUARTO_PYTHON'] = sys.executable
         
-  #   return {'src': str(plot_file), 'width': '600px'}
-  
-  # @render.image
-  # def slip_prior_post_plot():
-  #   # idcm = idata.get()
-  #   idcm = create_idata()
-    
-  #   slip_plot = azp.plot_prior_posterior(idcm,
-  #                                         var_names = ['slip'],
-  #                                         kind = 'kde')
-    
-  #   azp_dir = Path(here('arviz_plots'))
-  #   azp_dir.mkdir(parents = True,
-  #                  exist_ok = True)
+        result = subprocess.run(cmd, capture_output = True, text = True, env = env)
+        if result.returncode != 0:
+            raise SafeException(result.stderr.strip() or 'Quarto render failed.')
         
-  #   file_name = 'slip_plots.png'
-  #   plot_file = azp_dir / file_name
-    
-  #   fig = plt.gcf()
-  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
-  #   plt.close(fig)  # Crucial for memory management
+        path = out_dir / out_name
         
-  #   return {'src': str(plot_file), 'width': '600px'}
-  
-  # @render.image
-  # def nu_prior_post_plot():
-  #   # idcm = idata.get()
-  #   idcm = create_idata()
-    
-  #   nu_plot = azp.plot_prior_posterior(idcm,
-  #                                         var_names = ['nu'],
-  #                                         kind = 'kde')
-    
-  #   azp_dir = Path(here('arviz_plots'))
-  #   azp_dir.mkdir(parents = True,
-  #                  exist_ok = True)
+        p.set(detail = 'Done! Document is downloading.', value = 95)
         
-  #   file_name = 'nu_plots.png'
-  #   plot_file = azp_dir / file_name
-    
-  #   fig = plt.gcf()
-  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
-  #   plt.close(fig)  # Crucial for memory management
-        
-  #   return {'src': str(plot_file), 'width': '600px'}
-  
-  # @render.image
-  # def lambda_prior_post_plot():
-  #   # idcm = idata.get()
-  #   idcm = create_idata()
-  #   n = input.attr_num()
-    
-  #   if n == 2:
-  #     lambda_plot = azp.plot_prior_posterior(idcm,
-  #                                            var_names = ['lambda1', 'lambda2'],
-  #                                            kind = 'kde')
-  #   elif n == 3:
-  #     lambda_plot = azp.plot_prior_posterior(idcm,
-  #                                            var_names = ['lambda1', 'lambda2', 'lambda3'],
-  #                                            kind = 'kde')
-  #   elif n == 4:
-  #     lambda_plot = azp.plot_prior_posterior(idcm,
-  #                                            var_names = ['lambda1', 'lambda2', 'lambda3', 'lambda4'],
-  #                                            kind = 'kde')
-  #   elif n == 5:
-  #     lambda_plot = azp.plot_prior_posterior(idcm,
-  #                                            var_names = ['lambda1', 'lambda2', 'lambda3', 'lambda4', 'lambda5'],
-  #                                            kind = 'kde')
-      
-  #   azp_dir = Path(here('arviz_plots'))
-  #   azp_dir.mkdir(parents = True,
-  #                  exist_ok = True)
-        
-  #   file_name = 'lambda_plots.png'
-  #   plot_file = azp_dir / file_name
-    
-  #   fig = plt.gcf()
-  #   fig.savefig(plot_file, format = 'png', bbox_inches = 'tight')
-  #   plt.close(fig)  # Crucial for memory management
-        
-  #   return {'src': str(plot_file), 'width': '600px'}
-    
-    
+        yield path.read_bytes()
+
 # --------------------------------------------------------------------------------------------------------
 
 app = App(app_ui, server)
