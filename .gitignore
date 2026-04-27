@@ -207,9 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 # Ignore stan model files, as they are temporary
-data_model_fit/*.joblib
+data_model_fit/
 stan_files/
-diagnostics/*.csv
+diagnostics/
 
 /.quarto/
 **/*.quarto_ipynb
