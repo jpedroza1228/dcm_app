@@ -210,3 +210,6 @@ __marimo__/
 data_model_fit/
 stan_files/
 diagnostics/
+
+/.quarto/
+**/*.quarto_ipynb
