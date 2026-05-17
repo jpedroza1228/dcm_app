@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-# from great_tables import GT
 import matplotlib
 import matplotlib.pyplot as plt
 import plotnine as pn
@@ -13,7 +12,6 @@ import shinyswatch
 from pathlib import Path
 import tempfile
 import subprocess
-import papermill as pm
 import os
 import sys
 from cmdstanpy import CmdStanModel
@@ -24,31 +22,14 @@ from pyhere import here
 pd.set_option('display.max_columns', None)
 matplotlib.rcParams.update({'savefig.bbox': 'tight'})
 
-# --------------------------------------------------------------------------------------------------------
-
-# code
-def stan_datachunk():
-  data = 'data {\n  int<lower=1> J;\n  int<lower=1> I;\n  int<lower=1> C;\n  int<lower=1> K;\n  matrix<lower=0,upper=1> [J,I] Y;\n  matrix<lower=0,upper=1> [I,K] Q;\n  matrix<lower=0,upper=1> [C,K] alpha;\n}'
-  return data
-
-def stan_generatechunk():
-  quant = f'generated quantities {{\n  matrix[J,C] prob_resp_class;\n  matrix[J,K] prob_resp_attr;\n  array[I] real eta;\n  row_vector[C] prob_joint;\n  vector[J] log_lik;\n  array[C] real prob_attr_class;\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n   for (c in 1:C){{\n     for(i in 1:I){{\n       real p = fmin(fmax(pi[i,c], 1e-9), 1 - 1e-9);\n       eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n     }}\n     prob_joint[c] = exp(log_nu[c]) * exp(sum(eta));\n     log_lik[j] = log_sum_exp(prob_joint);\n   }}\n   prob_resp_class[j] = prob_joint/sum(prob_joint);\n  }}\n\n  for (j in 1:J){{\n    for (k in 1:K){{\n      for (c in 1:C){{\n        prob_attr_class[c] = prob_resp_class[j,c] * alpha[c,k];\n      }}\n      prob_resp_attr[j,k] = sum(prob_attr_class);\n    }}\n  }}\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
-  
-  return quant
-
-def stan_generateprior():
-  quant = f'generated quantities {{\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
-  
-  return quant
-
-# --------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------
 
 app_ui = ui.page_navbar(
   ui.nav_panel('Background Information',
                ui.layout_columns(
                  ui.page_fluid(
                    ui.markdown("""
-                               This page has all the information required to use the following pages for using diagnostic classification models (DCM) to see which respondents have the skills measured in assessments. Currently, this application is focused on DCMs for smaller samples as an introduction to using DCMs as an preventive measure to flag respondents that may not have a grasp of skills assessed in an assessment.
+                               This page has most of the information required to use the following pages for using diagnostic classification models (DCM) to see which respondents have the skills measured in assessments. Currently, this application is focused on DCMs for smaller samples as an introduction to using DCMs as an preventive measure to flag respondents that may not have a grasp of skills assessed in an assessment.
                              
                                *This application should not be used as the sole measure of assessing proficiency in respondents. These models are not perfect, especially for smaller samples, so user judgment should be used to determine respondent proficiency.*
                              
@@ -88,6 +69,9 @@ app_ui = ui.page_navbar(
                           - DINO = Respondents have at least one skill to solve the question
                           - DINA = Respondents need all the skills to solve the question
                           - Differences between models is apparent when questions measure more than one skill
+                      - Model structure types include: 
+                          - unconstrained: allow the skills to be related
+                          - linear: there is a belief that skill 1 is needed for skill 2 and so on (e.g., Skill1 --> Skill2 --> Skill3...)
                       - You'll need a Q-matrix to conduct analyses
                           - A Q-matrix is a checklist that you will create to show what questions (row) measure each skill (column) 
                           - When a question measures one or more skills, you will mark that cell with a 1, otherwise keep it as a 0
@@ -107,9 +91,14 @@ app_ui = ui.page_navbar(
     ui.nav_panel('Exploring Priors',
                ui.layout_columns(
                  ui.page_fluid(
-                   ui.output_plot('att1_dist'),
-                   ui.hr(),
-                   ui.output_plot('slip_dist')
+                   ui.panel_conditional(
+                     "input.prof_model == 'linear'",
+                     ui.output_plot('att1_dist'),
+                   ),
+                    ui.hr(),
+                    ui.output_plot('slip_dist'),
+                    ui.hr(),
+                    ui.output_plot('guess_dist')
                    ),
                  ui.page_fluid(
                    ui.h6('Top 5 rows of dataset'),
@@ -150,35 +139,39 @@ app_ui = ui.page_navbar(
       ui.input_file('qload', 'Load in your Q-Matrix')
     ),
     ui.hr(),
+    ui.input_select('prof_model',
+                    'Choose relationship between skills',
+                    {'unconstrained': 'Unconstrained',
+                     'linear': 'Linear'}),
     ui.input_select('type_model',
                     'Choose a Model Type:',
                     {'dino': 'DINO',
                      'dina': 'DINA'}
     ),
-    ui.h6('How likely are students to have the skill?'),
-    ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 20, step = .5),
-    ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 5, step = .5),
-    ui.input_checkbox('all_same_prior', 'Keep all the same skill priors as above', True),
     ui.panel_conditional(
+      "input.prof_model == 'linear'",
+      ui.h6('How likely is a respondent to have the skill?'),
+      ui.input_slider('att1_alpha', 'Beta Distribution - Skill 1: Alpha', 0, 50, 20, step = .5),
+      ui.input_slider('att1_beta', 'Beta Distribution - Skill 1: Beta', 0, 50, 5, step = .5),
+      ui.input_checkbox('all_same_prior', 'Keep all the same skill priors as above', True),
+      ui.panel_conditional(
       '!input.all_same_prior',
-      ui.input_slider('att2_alpha', 'Beta Distribution - Skill 2: Alpha', .5, 50, 20, step = .5),
-      ui.input_slider('att2_beta', 'Beta Distribution - Skill 2: Beta', .5, 50, 5, step = .5),
-      ui.input_slider('att3_alpha', 'Beta Distribution - Skill 3: Alpha', .5, 50, 20, step = .5),
-      ui.input_slider('att3_beta', 'Beta Distribution - Skill 3: Beta', .5, 50, 5, step = .5),
-      ui.input_slider('att4_alpha', 'Beta Distribution - Skill 4: Alpha', .5, 50, 20, step = .5),
-      ui.input_slider('att4_beta', 'Beta Distribution - Skill 4: Beta', .5, 50, 5, step = .5),
-      ui.input_slider('att5_alpha', 'Beta Distribution - Skill 5: Alpha', .5, 50, 20, step = .5),
-      ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', .5, 50, 5, step = .5),
+        ui.input_slider('att2_alpha', 'Beta Distribution - Skill 2: Alpha', .5, 50, 20, step = .5),
+        ui.input_slider('att2_beta', 'Beta Distribution - Skill 2: Beta', .5, 50, 5, step = .5),
+        ui.input_slider('att3_alpha', 'Beta Distribution - Skill 3: Alpha', .5, 50, 20, step = .5),
+        ui.input_slider('att3_beta', 'Beta Distribution - Skill 3: Beta', .5, 50, 5, step = .5),
+        ui.input_slider('att4_alpha', 'Beta Distribution - Skill 4: Alpha', .5, 50, 20, step = .5),
+        ui.input_slider('att4_beta', 'Beta Distribution - Skill 4: Beta', .5, 50, 5, step = .5),
+        ui.input_slider('att5_alpha', 'Beta Distribution - Skill 5: Alpha', .5, 50, 20, step = .5),
+        ui.input_slider('att5_beta', 'Beta Distribution - Skill 5: Beta', .5, 50, 5, step = .5),
+    )
     ),
-    # ui.hr(),
-    ui.h6('How likely are students to slip?'),
+    ui.h6('How likely is a respondent to slip?'),
     ui.input_slider('slip_alpha', 'Beta Distribution - Slip: Alpha', .5, 50, 5, step = .5),
     ui.input_slider('slip_beta', 'Beta Distribution - Slip: Beta', .5, 50, 20, step = .5),
-    # ui.hr(),
-    ui.h6('How likely are students to guess?'),
+    ui.h6('How likely is a respondent to guess?'),
     ui.input_slider('guess_alpha', 'Beta Distribution - Guess: Alpha', .5, 50, 5, step = .5),
     ui.input_slider('guess_beta', 'Beta Distribution - Guess: Beta', .5, 50, 20, step = .5),
-    # ui.hr(),
     ui.input_action_button('plot_param', 'Plot priors'),
     ui.hr(),
     ui.input_action_button('build_model', 'Update parameters (after choosing priors)'),
@@ -246,7 +239,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     df = loaded_data()
     if df is not None:
       n_attrs = input.attr_num()
-      attr_cols = [f'A{i}' for i in range(1, n_attrs + 1)]
+      attr_cols = [f'attr{i}' for i in range(1, n_attrs + 1)]
       # Build the fresh grid
       q = pd.DataFrame(0, index = df.columns, columns = attr_cols).reset_index()
       q.rename(columns = {'index': 'Item'}, inplace = True)
@@ -266,7 +259,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return None
       
     q = pd.read_csv(uploaded[0]['datapath']).clean_names(case_type = 'snake')
-    q = q.rename(columns={q.columns[0]: 'item'})
+    q = q.rename(columns = {q.columns[0]: 'item'})
     q['item'] = [f'item{i}' for i in range(1, len(q) + 1)]
 
     return q
@@ -314,7 +307,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                         fill = 'seagreen')
       + pn.scale_x_continuous(limits = [0, 1],
                               breaks = np.arange(0, 1.1, .1))
-      + pn.labs(title = 'How likely is it that students have the skill',
+      + pn.labs(title = 'How likely is it that a respondent will have the skill',
                 x = 'Probability',
                 y = '',
                 caption = 'Plot shows skill 1 (will be similar to other skills)')
@@ -342,10 +335,36 @@ def server(input: Inputs, output: Outputs, session: Session):
                         fill = 'seagreen')
       + pn.scale_x_continuous(limits = [0, 1],
                               breaks = np.arange(0, 1.1, .1))
-      + pn.labs(title = 'How likely will a student slip',
+      + pn.labs(title = 'How likely is it that a respondent will slip',
                 x = 'Probability',
-                y = '',
-                caption = 'Plot shows slip as example (similar to guess)')
+                y = '')
+      + pn.theme_light()
+    )
+    return plot.draw()
+  
+  @render.plot
+  @reactive.event(input.plot_param)
+  def guess_dist():
+    alpha = input.guess_alpha()
+    beta = input.guess_beta()
+    
+    if alpha <= 0 or beta <= 0:
+        return None
+    
+    dist_data = pd.DataFrame({
+        'value': np.random.beta(alpha, beta, size = 1000)
+    })
+    
+    plot = (
+      pn.ggplot(dist_data,
+                pn.aes('value'))
+      + pn.geom_density(color = 'black',
+                        fill = 'seagreen')
+      + pn.scale_x_continuous(limits = [0, 1],
+                              breaks = np.arange(0, 1.1, .1))
+      + pn.labs(title = 'How likely is it that a respondent will guess',
+                x = 'Probability',
+                y = '')
       + pn.theme_light()
     )
     return plot.draw()
@@ -353,54 +372,132 @@ def server(input: Inputs, output: Outputs, session: Session):
   @reactive.calc
   def create_alpha():
     q = loaded_q()
-    n = q.shape[1] - 1
+    # n = q.shape[1] - 1
+    n = q.filter(regex = 'attr').shape[1]
+    prof_model = input.prof_model()
     
     if n == 2:
       alpha = pd.DataFrame([(a, b) for a in np.arange(2) for b in np.arange(2)])
+      alpha = alpha.rename(columns = {0: 'attr1',
+                                      1: 'attr2'})
       
-      alpha = alpha.rename(columns = {0: 'A1',
-                                      1: 'A2'})
+      if prof_model == 'linear':
+        alpha = alpha.loc[~((alpha['attr1'] == 0) & (alpha['attr2'] == 1))]
+        alpha = alpha.reset_index(drop = True)
+      
     elif n == 3:
       alpha = pd.DataFrame([(a, b, c) for a in np.arange(2) for b in np.arange(2) for c in np.arange(2)])
       
-      alpha = alpha.rename(columns = {0: 'A1',
-                                      1: 'A2',
-                                      2: 'A3'})
+      alpha = alpha.rename(columns = {0: 'attr1',
+                                      1: 'attr2',
+                                      2: 'attr3'})
       
+      if prof_model == 'linear':
+        alpha = (
+          alpha.loc[~((alpha['attr1'] == 0) 
+                     & (alpha['attr2'] == 1)) 
+                   & ~((alpha['attr2'] == 0) 
+                       & (alpha['attr3'] == 1))]
+        )
+        alpha = alpha.reset_index(drop = True)
+              
     elif n == 4:
       alpha = pd.DataFrame([(a, b, c, d) for a in np.arange(2) for b in np.arange(2) for c in np.arange(2) for d in np.arange(2)])
       
-      alpha = alpha.rename(columns = {0: 'A1',
-                                      1: 'A2',
-                                      2: 'A3',
-                                      3: 'A4'})
+      alpha = alpha.rename(columns = {0: 'attr1',
+                                      1: 'attr2',
+                                      2: 'attr3',
+                                      3: 'attr4'})
+      
+      if prof_model == 'linear':
+        alpha = (
+          alpha.loc[~((alpha['attr1'] == 0) 
+                     & (alpha['attr2'] == 1)) 
+                   & ~((alpha['attr2'] == 0) 
+                       & (alpha['attr3'] == 1)) 
+                   & ~((alpha['attr3'] == 0) 
+                       & (alpha['attr4'] == 1))]
+        )
+        alpha = alpha.reset_index(drop = True)
+    
     elif n == 5:
       alpha = pd.DataFrame([(a, b, c, d, e) for a in np.arange(2) for b in np.arange(2) for c in np.arange(2) for d in np.arange(2) for e in np.arange(2)])
       
-      alpha = alpha.rename(columns = {0: 'A1',
-                                      1: 'A2',
-                                      2: 'A3',
-                                      3: 'A4',
-                                      4: 'A5'})
+      alpha = alpha.rename(columns = {0: 'attr1',
+                                      1: 'attr2',
+                                      2: 'attr3',
+                                      3: 'attr4',
+                                      4: 'attr5'})
+      
+      if prof_model == 'linear':
+        alpha = (
+          alpha.loc[~((alpha['attr1'] == 0) 
+                     & (alpha['attr2'] == 1)) 
+                   & ~((alpha['attr2'] == 0) 
+                       & (alpha['attr3'] == 1)) 
+                   & ~((alpha['attr3'] == 0) 
+                       & (alpha['attr4'] == 1))
+                   & ~((alpha['attr4'] == 0) 
+                       & (alpha['attr5'] == 1))]
+        )
+        alpha = alpha.reset_index(drop = True)
+        
     return alpha
   
+  @reactive.calc
+  def create_xi():
+    type_model = input.type_model()
+    q = loaded_q()
+    alpha = create_alpha()
+    
+    xi = np.zeros((q.shape[0], alpha.shape[0]), dtype = int)
+    # q = q.iloc[:, 1:]
+    q = q.filter(regex = 'attr')
+    q_arr = q.to_numpy()
+    alpha_arr = alpha.to_numpy()
+    
+    if type_model == 'dino':
+      for i in range(q_arr.shape[0]):
+        for c in range(alpha_arr.shape[0]):
+          if np.any((q_arr[i, :] == 1) & (alpha_arr[c, :] == 1)):
+            xi[i, c] = 1
+            
+    elif type_model == 'dina':
+      for i in range(q_arr.shape[0]):
+        # Get the indices where the item requires an attribute
+        req_attr = np.where(q_arr[i, :] == 1)[0]
+
+        for c in range(alpha_arr.shape[0]):
+          # Check if the class has a 1 at ALL those required indices
+          if np.all(alpha_arr[c, req_attr] == 1):
+              xi[i, c] = 1
+              
+    else:
+        raise ValueError("Structural model must be 'DINA' or 'DINO'")
+  
+    return xi
+
   @reactive.calc
   def stan_data_dict():
     df = loaded_data()
     q = loaded_q()
     alpha = create_alpha()
+    xi = create_xi()
     
-    if df is None or q is None or alpha is None:
-        return None
+    if df is None or q is None or alpha is None or xi is None:
+      return None
     
     stan_dict = {
       'J': df.shape[0],
       'I': df.shape[1],
       'C': alpha.shape[0],
-      'K': q.shape[1] - 1,
+      # 'K': q.shape[1] - 1,
+      'K': q.filter(regex = 'attr').shape[1],
       'Y': df.to_numpy(),
-      'Q': q.iloc[:, 1:].to_numpy(),
-      'alpha': alpha.to_numpy()
+      # 'Q': q.iloc[:, 1:].to_numpy(),
+      'Q': q.filter(regex = 'attr').to_numpy(),
+      'alpha': alpha.to_numpy(),
+      'xi': xi
       }
     
     return stan_dict
@@ -411,9 +508,12 @@ def server(input: Inputs, output: Outputs, session: Session):
     if not input.use_init_values():
         return None
       
-    n = input.attr_num()
+    q = loaded_q()
+    n = q.filter(regex = 'attr').shape[1]
     df = loaded_data()
     alpha = create_alpha()
+    prof_model = input.prof_model()
+    init_values = input.use_init_values()
     
     slip_alpha = input.slip_alpha()
     slip_beta = input.slip_beta()
@@ -429,58 +529,284 @@ def server(input: Inputs, output: Outputs, session: Session):
     slip_sd = np.std(slip)
     guess_sd = np.std(guess)
     
-    if n == 2:
-      if input.use_init_values() == True:
+    if prof_model == 'linear':
+      if n == 2:
+        if init_values == True:
+            alpha1 = input.att1_alpha()
+            beta1 = input.att1_beta()
+            alpha2 = input.att2_alpha()
+            beta2 = input.att2_beta()
+
+            att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+            att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+
+            start = np.mean([att1_dist, att2_dist])
+            sd = np.std([att1_dist, att2_dist])
+
+            return {
+              'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+              'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+              'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+              'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+              'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+              }
+        else:
+          return None
+
+      elif n == 3:
+        if init_values == True:
+          alpha1 = input.att1_alpha()
+          beta1 = input.att1_beta()
+          alpha2 = input.att2_alpha()
+          beta2 = input.att2_beta()
+          alpha3 = input.att3_alpha()
+          beta3 = input.att3_beta()
+
+          att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+          att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+          att3_dist = np.random.beta(alpha3, beta3, size = 1000)
+
+          start = np.mean([att1_dist, att2_dist, att3_dist])
+          sd = np.std([att1_dist, att2_dist, att3_dist])
+
+          return {
+            'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+            'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+            'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+            'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+            }
+        else:
+          return None
+
+      elif n == 4:
+        if init_values == True:
+          alpha1 = input.att1_alpha()
+          beta1 = input.att1_beta()
+          alpha2 = input.att2_alpha()
+          beta2 = input.att2_beta()
+          alpha3 = input.att3_alpha()
+          beta3 = input.att3_beta()
+          alpha4 = input.att4_alpha()
+          beta4 = input.att4_beta()
+
+          att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+          att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+          att3_dist = np.random.beta(alpha3, beta3, size = 1000)
+          att4_dist = np.random.beta(alpha4, beta4, size = 1000)
+
+          start = np.mean([att1_dist, att2_dist, att3_dist, att4_dist])
+          sd = np.std([att1_dist, att2_dist, att3_dist, att4_dist])
+
+          return {
+            'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+            'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+            'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+            'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda4': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+            }
+        else:
+          return None
+
+      elif n == 5:
+        if init_values == True:
+          alpha1 = input.att1_alpha()
+          beta1 = input.att1_beta()
+          alpha2 = input.att2_alpha()
+          beta2 = input.att2_beta()
+          alpha3 = input.att3_alpha()
+          beta3 = input.att3_beta()
+          alpha4 = input.att4_alpha()
+          beta4 = input.att4_beta()
+          alpha5 = input.att5_alpha()
+          beta5 = input.att5_beta()
+
+          att1_dist = np.random.beta(alpha1, beta1, size = 1000)
+          att2_dist = np.random.beta(alpha2, beta2, size = 1000)
+          att3_dist = np.random.beta(alpha3, beta3, size = 1000)
+          att4_dist = np.random.beta(alpha4, beta4, size = 1000)
+          att5_dist = np.random.beta(alpha5, beta5, size = 1000)
+
+          start = np.mean([att1_dist, att2_dist, att3_dist, att4_dist, att5_dist])
+          sd = np.std([att1_dist, att2_dist, att3_dist, att4_dist, att5_dist])
+
+          return {
+            'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+            'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+            'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
+            'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda4': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
+            'lambda5': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
+            }
+        else:
+          return None
+        
+      elif prof_model == 'unconstrained':
+        return {
+              'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
+              'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
+              'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1)
+              }
+    
+  @reactive.event(input.build_model)
+  def update_model():
+    return f'{input.build_model()}'
+  
+  @reactive.effect
+  @reactive.event(input.build_model)
+  def show_build_notification():
+    ui.notification_show('Parameters are updated. Model is ready to run.',
+                         type = 'message',
+                         duration = 10)
+  
+  @reactive.event(input.build_model)
+  def stan_datachunk():
+    data = 'data {\n  int<lower=1> J;\n  int<lower=1> I;\n  int<lower=1> C;\n  int<lower=1> K;\n  matrix<lower=0,upper=1> [J,I] Y;\n  matrix<lower=0,upper=1> [I,K] Q;\n  matrix<lower=0,upper=1> [C,K] alpha;\n  matrix<lower=0,upper=1> [I,C] xi;\n}'
+    return data
+  
+  @reactive.event(input.build_model)
+  def stan_generatechunk():
+    prof_model = input.prof_model()
+
+    if prof_model == 'linear':
+      quant = f'generated quantities {{\n  matrix[J,C] prob_resp_class;\n  matrix[J,K] prob_resp_attr;\n  array[I] real eta;\n  row_vector[C] prob_joint;\n  vector[J] log_lik;\n  array[C] real prob_attr_class;\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n   for (c in 1:C){{\n     for(i in 1:I){{\n       real p = fmin(fmax(pi[i,c], 1e-9), (1 - 1e-9));\n       eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n     }}\n     prob_joint[c] = exp(log_nu[c]) * exp(sum(eta));\n     log_lik[j] = log_sum_exp(prob_joint);\n   }}\n   prob_resp_class[j] = prob_joint/sum(prob_joint);\n  }}\n\n  for (j in 1:J){{\n    for (k in 1:K){{\n      for (c in 1:C){{\n        prob_attr_class[c] = prob_resp_class[j,c] * alpha[c,k];\n      }}\n      prob_resp_attr[j,k] = sum(prob_attr_class);\n    }}\n  }}\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu/sum(nu));\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+
+    elif prof_model == 'unconstrained':
+      quant = f'generated quantities {{\n  matrix[J,C] prob_resp_class;\n  matrix[J,K] prob_resp_attr;\n  array[I] real eta;\n  row_vector[C] prob_joint;\n  vector[J] log_lik;\n  array[C] real prob_attr_class;\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n   for (c in 1:C){{\n     for(i in 1:I){{\n       real p = fmin(fmax(pi[i,c], 1e-9), (1 - 1e-9));\n       eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n     }}\n     prob_joint[c] = exp(log_nu[c]) * exp(sum(eta));\n     log_lik[j] = log_sum_exp(prob_joint);\n   }}\n   prob_resp_class[j] = prob_joint/sum(prob_joint);\n  }}\n\n  for (j in 1:J){{\n    for (k in 1:K){{\n      for (c in 1:C){{\n        prob_attr_class[c] = prob_resp_class[j,c] * alpha[c,k];\n      }}\n      prob_resp_attr[j,k] = sum(prob_attr_class);\n    }}\n  }}\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+
+    return quant
+
+  @reactive.event(input.build_model)
+  def stan_generateprior():
+    prof_model = input.prof_model()
+    
+    if prof_model == 'linear':
+      quant = f'generated quantities {{\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu/sum(nu));\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+    
+    else:
+      quant = f'generated quantities {{\n  matrix[J,I] y_rep;\n\n  for (j in 1:J){{\n    int z = categorical_rng(nu);\n    for (i in 1:I){{\n      y_rep[j,i] = bernoulli_rng(pi[i,z]);\n    }}\n  }}\n}}'
+  
+    return quant
+  
+  @reactive.event(input.build_model)
+  def stan_paramchunk():
+    q = loaded_q()
+    # attr_num = q.shape[1] - 1
+    attr_num = q.filter(regex = 'attr').shape[1]
+    prof_model = input.prof_model()
+    
+    if prof_model == 'linear':
+      param = 'parameters {\n  vector<lower=0, upper=1>[I] slip;\n  vector<lower=0, upper=1>[I] guess;\n'
+      
+      if attr_num == 2:
+        attr_list = [1, 2]
+      elif attr_num == 3:
+        attr_list = [1, 2, 3]
+      elif attr_num == 4:
+        attr_list = [1, 2, 3, 4]
+      elif attr_num == 5:
+        attr_list = [1, 2, 3, 4, 5]
+
+      lambdas = '\n'.join([f'  real<lower=0, upper=1> lambda{i};' for i in attr_list])
+      
+      return param + lambdas + '\n}'
+    
+    elif prof_model == 'unconstrained':
+      param = 'parameters {\n  simplex[C] nu;\n  vector<lower=0, upper=1>[I] slip;\n  vector<lower=0, upper=1>[I] guess;'
+      
+      return param + '\n}'
+  
+  @reactive.event(input.build_model)
+  def stan_tparamchunk():
+    q = loaded_q()
+    # attr_num = q.shape[1] - 1
+    attr_num = q.filter(regex = 'attr').shape[1]
+    prof_model = input.prof_model()
+    
+    if prof_model == 'linear':
+      param = 'transformed parameters {\n  vector[C] nu;\n  vector[C] log_nu;\n  matrix[I,C] pi;\n'
+      
+      attr1_line = '\n  for (c in 1:C) {\n    real theta1 = (alpha[c,1] == 1) ? lambda1 : (1 - lambda1);\n'
+      
+      pi_calc = '\n  log_nu = log(nu);\n\n  for (c in 1:C){\n    for (i in 1:I){\n      pi[i,c] = pow((1 - slip[i]), xi[i,c]) *\n      pow(guess[i], (1 - xi[i,c]));\n    }\n  }\n}'
+      
+      if attr_num == 2:
+        more_attr_line = '\n    real theta2;\n\n    if (alpha[c,1] == 1) {\n      theta2 = (alpha[c,2] == 1) ? lambda2 : (1 - lambda2);\n    } \n    else {\n      theta2 = (alpha[c,2] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    nu[c] = theta1 * theta2;\n  }\n'
+        
+        trans_param = param + attr1_line + more_attr_line + pi_calc
+        
+        return trans_param
+      
+      elif attr_num == 3:
+        more_attr_line = '\n    real theta2;\n    real theta3;\n\n    if (alpha[c,1] == 1) {\n      theta2 = (alpha[c,2] == 1) ? lambda2 : (1 - lambda2);\n    } \n    else {\n      theta2 = (alpha[c,2] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    if (alpha[c,1] == 1 && alpha[c,2] == 1) {\n      theta3 = (alpha[c,3] == 1) ? lambda3 : (1 - lambda3);\n    }\n    else {\n      theta3 = (alpha[c,3] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    nu[c] = theta1 * theta2 * theta3;\n  }\n'
+
+        trans_param = param + attr1_line + more_attr_line + pi_calc
+        
+        return trans_param
+      
+      elif attr_num == 4:
+        more_attr_line = '\n    real theta2;\n    real theta3;\n    real theta4;\n\n    if (alpha[c,1] == 1) {\n      theta2 = (alpha[c,2] == 1) ? lambda2 : (1 - lambda2);\n    } \n    else {\n      theta2 = (alpha[c,2] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    if (alpha[c,1] == 1 && alpha[c,2] == 1) {\n      theta3 = (alpha[c,3] == 1) ? lambda3 : (1 - lambda3);\n    }\n    else {\n      theta3 = (alpha[c,3] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    if (alpha[c,1] == 1 && alpha[c,2] == 1 && alpha[c,3] == 1) {\n      theta4 = (alpha[c,4] == 1) ? lambda4 : (1 - lambda4);\n    }\n    else {\n      theta4 = (alpha[c,4] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    nu[c] = theta1 * theta2 * theta3 * theta4;\n  }\n'
+
+        trans_param = param + attr1_line + more_attr_line + pi_calc
+        
+        return trans_param
+      
+      elif attr_num == 5:
+        more_attr_line = '\n    real theta2;\n    real theta3;\n    real theta4;\n    real theta5;\n\n    if (alpha[c,1] == 1) {\n      theta2 = (alpha[c,2] == 1) ? lambda2 : (1 - lambda2);\n    } \n    else {\n      theta2 = (alpha[c,2] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    if (alpha[c,1] == 1 && alpha[c,2] == 1) {\n      theta3 = (alpha[c,3] == 1) ? lambda3 : (1 - lambda3);\n    }\n    else {\n      theta3 = (alpha[c,3] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    if (alpha[c,1] == 1 && alpha[c,2] == 1 && alpha[c,3] == 1) {\n      theta4 = (alpha[c,4] == 1) ? lambda4 : (1 - lambda4);\n    }\n    else {\n      theta4 = (alpha[c,4] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    if (alpha[c,1] == 1 && alpha[c,2] == 1 && alpha[c,3] == 1 && alpha[c,4] == 1) {\n      theta5 = (alpha[c,5] == 1) ? lambda5 : (1 - lambda5);\n    }\n    else {\n      theta5 = (alpha[c,5] == 1) ? 1e-9 : (1 - 1e-9);\n    }\n    nu[c] = theta1 * theta2 * theta3 * theta4 * theta5;\n  }\n'
+
+        trans_param = param + attr1_line + more_attr_line + pi_calc
+        
+        return trans_param
+        
+    elif prof_model == 'unconstrained':
+      param = 'transformed parameters {\n  vector[C] log_nu;\n  matrix[I,C] pi;\n'
+      
+      pi_calc = '\n  log_nu = log(nu);\n\n  for (c in 1:C){\n    for (i in 1:I){\n      pi[i,c] = pow((1 - slip[i]), xi[i,c]) *\n      pow(guess[i], (1 - xi[i,c]));\n    }\n  }\n}'
+      
+      trans_param = param + pi_calc
+      
+      return trans_param
+      
+  @reactive.event(input.build_model)
+  def stan_modelchunk():
+    q = loaded_q()
+    # n = q.shape[1] - 1
+    n = q.filter(regex = 'attr').shape[1]
+    prof_model = input.prof_model()
+    
+    slip_alpha = input.slip_alpha()
+    slip_beta = input.slip_beta()
+    guess_alpha = input.guess_alpha()
+    guess_beta = input.guess_beta()
+  
+    model_start = f'model{{\n  array[C] real ps;\n  array[I] real eta;\n\n  for (i in 1:I){{\n    slip[i] ~ beta({slip_alpha}, {slip_beta});\n    guess[i] ~ beta({guess_alpha}, {guess_beta});\n  }}\n'
+    
+    if prof_model == 'linear':
+      
+      if n == 2:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
         beta2 = input.att2_beta()
-        
-        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
-        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
-        
-        start = np.mean([att1_dist, att2_dist])
-        sd = np.std([att1_dist, att2_dist])
-        
-        return {
-          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
-          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
-          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
-          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
-      }
-      else:
-        return None
-    
-    elif n == 3:
-      if input.use_init_values() == True:
+
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n\n'
+
+      elif n == 3:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
         beta2 = input.att2_beta()
         alpha3 = input.att3_alpha()
         beta3 = input.att3_beta()
-        
-        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
-        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
-        att3_dist = np.random.beta(alpha3, beta3, size = 1000)
-        
-        start = np.mean([att1_dist, att2_dist, att3_dist])
-        sd = np.std([att1_dist, att2_dist, att3_dist])
-        
-        return {
-          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
-          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
-          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
-          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
-      }
-      else:
-        return None
-    
-    elif n == 4:
-      if input.use_init_values() == True:
+
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n\n'
+
+      elif n == 4:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
@@ -489,29 +815,10 @@ def server(input: Inputs, output: Outputs, session: Session):
         beta3 = input.att3_beta()
         alpha4 = input.att4_alpha()
         beta4 = input.att4_beta()
-        
-        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
-        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
-        att3_dist = np.random.beta(alpha3, beta3, size = 1000)
-        att4_dist = np.random.beta(alpha4, beta4, size = 1000)
-        
-        start = np.mean([att1_dist, att2_dist, att3_dist, att4_dist])
-        sd = np.std([att1_dist, att2_dist, att3_dist, att4_dist])
-        
-        return {
-          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
-          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
-          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
-          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda4': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
-      }
-      else:
-        return None
 
-    elif n == 5:
-      if input.use_init_values() == True:
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n\n'
+
+      elif n == 5:
         alpha1 = input.att1_alpha()
         beta1 = input.att1_beta()
         alpha2 = input.att2_alpha()
@@ -522,220 +829,83 @@ def server(input: Inputs, output: Outputs, session: Session):
         beta4 = input.att4_beta()
         alpha5 = input.att5_alpha()
         beta5 = input.att5_beta()
-        
-        att1_dist = np.random.beta(alpha1, beta1, size = 1000)
-        att2_dist = np.random.beta(alpha2, beta2, size = 1000)
-        att3_dist = np.random.beta(alpha3, beta3, size = 1000)
-        att4_dist = np.random.beta(alpha4, beta4, size = 1000)
-        att5_dist = np.random.beta(alpha5, beta5, size = 1000)
-        
-        start = np.mean([att1_dist, att2_dist, att3_dist, att4_dist, att5_dist])
-        sd = np.std([att1_dist, att2_dist, att3_dist, att4_dist, att5_dist])
-        
-        return {
-          'nu': np.repeat(1/alpha.shape[0], alpha.shape[0]),
-          'slip': np.clip(np.random.uniform((slip_start - slip_sd), (slip_start + slip_sd), size = df.shape[1]).tolist(), 0, 1),
-          'guess': np.clip(np.random.uniform((guess_start - guess_sd), (guess_start + guess_sd), size = df.shape[1]).tolist(), 0, 1),
-          'lambda1': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda2': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda3': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda4': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1),
-          'lambda5': np.clip(np.random.uniform((start - sd), (start + sd)), 0, 1)
-      }
-      else:
-        return None
+
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n  lambda5 ~ beta({alpha5}, {beta5});\n\n'
+
+    model_end = f'  for (j in 1:J){{\n    for (c in 1:C){{\n      for (i in 1:I){{\n        real p = fmin(fmax(pi[i,c], 1e-9), (1 - 1e-9));\n        eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n      }}\n      ps[c] = log_nu[c] + sum(eta);\n    }}\n    target += log_sum_exp(ps);\n  }}\n}}'
+  
+    if prof_model == 'linear':
+      model = model_start + priors + model_end
     
-  @reactive.event(input.build_model)
-  def update_model():
-    return f'{input.build_model()}'
-  
-  @reactive.event(input.build_model)
-  def stan_paramchunk():
-    q = loaded_q()
-    attr_num = q.shape[1] - 1
-    
-    param = 'parameters {\n  ordered[C] raw_nu_ordered;\n  vector<lower=0, upper=1>[I] slip;\n  vector<lower=0, upper=1>[I] guess;\n'
-        
-    if attr_num == 2:
-      attr_list = [1, 2]
-    elif attr_num == 3:
-      attr_list = [1, 2, 3]
-    elif attr_num == 4:
-      attr_list = [1, 2, 3, 4]
-    else:
-      attr_list = [1, 2, 3, 4, 5]
-
-    lambdas = '\n'.join([f'  real<lower=0, upper=1> lambda{i};' for i in attr_list])
-
-    return param + lambdas + '\n}'
-  
-  @reactive.event(input.build_model)
-  def stan_tparamchunk():
-    q = loaded_q()
-    attr_num = q.shape[1] - 1
-    type_model = input.type_model()
-    
-    param = 'transformed parameters {\n  simplex[C] nu;\n  matrix[I,C] delta;\n  matrix[I,C] pi;\n'
-
-    if attr_num == 2:
-      attr_list = [1, 2]
-    elif attr_num == 3:
-      attr_list = [1, 2, 3]
-    elif attr_num == 4:
-      attr_list = [1, 2, 3, 4]
-    else:
-      attr_list = [1, 2, 3, 4, 5]
-
-    thetas = '\n'.join([f'  vector[C] theta{i};' for i in attr_list])
-    theta_loop_open = '\n\n  for (c in 1:C){\n'
-    theta_calc = '\n'.join([f'    theta{i}[c] = (alpha[c, {i}] > 0) ? lambda{i} : (1 - lambda{i});' for i in attr_list])
-    theta_loop_close = '\n  }'
-
-    nu_calc = f'\n\n  nu = softmax(raw_nu_ordered);\n  vector[C] log_nu = log(nu);\n\n'
-
-    if type_model == 'dino':
-      if attr_num == 2:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]));\n    }}\n  }}\n'
-      elif attr_num == 3:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]) *\n      pow(1 - theta3[c], Q[i, 3]));\n    }}\n  }}\n'
-      elif attr_num == 4:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]) *\n  pow(1 - theta3[c], Q[i, 3]) *\n      pow(1 - theta4[c], Q[i, 4]));\n    }}\n  }}\n'
-      else:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 - (pow(1 - theta1[c], Q[i, 1]) *\n      pow(1 - theta2[c], Q[i, 2]) *\n      pow(1 - theta3[c], Q[i, 3]) *\n      pow(1 - theta4[c], Q[i, 4]) *\n      pow(1 - theta5[c], Q[i, 5]));\n    }}\n  }}\n'
-
-    elif type_model == 'dina':
-      if attr_num == 2:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = 1 pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]);\n    }}\n  }}\n'
-      elif attr_num == 3:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]) *\n      pow(theta3[c], Q[i, 3]);\n    }}\n  }}\n'
-      elif attr_num == 4:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]) *\n      pow(theta3[c], Q[i, 3]) *\n      pow(theta4[c], Q[i, 4]);\n    }}\n  }}\n'
-      else:
-        delta_calc = f'  for (c in 1:C){{\n    for (i in 1:I){{\n      delta[i, c] = pow(theta1[c], Q[i, 1]) *\n      pow(theta2[c], Q[i, 2]) *\n      pow(theta3[c], Q[i, 3]) *\n      pow(theta4[c], Q[i, 4]) *\n      pow(theta5[c], Q[i, 5]);\n    }}\n  }}\n'
-
-    pi_calc = f'\n  for (c in 1:C){{\n    for (i in 1:I){{\n      pi[i,c] = pow((1 - slip[i]), delta[i,c]) *\n      pow(guess[i], (1 - delta[i,c]));\n    }}\n  }}\n}}'
-
-    trans_param = param + thetas + theta_loop_open + theta_calc + theta_loop_close + nu_calc + delta_calc + pi_calc
-
-    return trans_param
-  
-  @reactive.event(input.build_model)
-  def stan_modelchunk():
-    q = loaded_q()
-    n = q.shape[1] - 1
-    slip_alpha = input.slip_alpha()
-    slip_beta = input.slip_beta()
-    guess_alpha = input.guess_alpha()
-    guess_beta = input.guess_beta()
-  
-    model_start = f'model{{\n  array[C] real ps;\n  array[I] real eta;\n\n  raw_nu_ordered ~ normal(0,2);\n  for (i in 1:I){{\n    slip[i] ~ beta({slip_alpha}, {slip_beta});\n    guess[i] ~ beta({guess_alpha}, {guess_beta});\n  }}\n'
-
-    if n == 2:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n\n'
-
-    elif n == 3:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-      alpha3 = input.att3_alpha()
-      beta3 = input.att3_beta()
-
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n\n'
-
-    elif n == 4:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-      alpha3 = input.att3_alpha()
-      beta3 = input.att3_beta()
-      alpha4 = input.att4_alpha()
-      beta4 = input.att4_beta()
-
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n\n'
-
-    elif n == 5:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-      alpha3 = input.att3_alpha()
-      beta3 = input.att3_beta()
-      alpha4 = input.att4_alpha()
-      beta4 = input.att4_beta()
-      alpha5 = input.att5_alpha()
-      beta5 = input.att5_beta()
-
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n  lambda5 ~ beta({alpha5}, {beta5});\n\n'
-
-    model_end = f'  for (j in 1:J){{\n    for (c in 1:C){{\n      for (i in 1:I){{\n        real p = fmin(fmax(pi[i,c], 1e-9), 1 - 1e-9);\n        eta[i] = Y[j,i] * log(p) + (1 - Y[j,i]) * log1m(p);\n      }}\n      ps[c] = log_nu[c] + sum(eta);\n    }}\n    target += log_sum_exp(ps);\n  }}\n}}'
-  
-    model = model_start + priors + model_end
+    elif prof_model == 'unconstrained':
+      model = model_start + model_end
 
     return model
   
   @reactive.event(input.build_model)
   def stan_priormodelchunk():
     q = loaded_q()
-    n = q.shape[1] - 1
+    # n = q.shape[1] - 1
+    n = q.filter(regex = 'attr').shape[1]
+    prof_model = input.prof_model()
+    
     slip_alpha = input.slip_alpha()
     slip_beta = input.slip_beta()
     guess_alpha = input.guess_alpha()
     guess_beta = input.guess_beta()
   
-    model_start = f'model{{\n  array[C] real ps;\n  array[I] real eta;\n\n  raw_nu_ordered ~ normal(0,2);\n  for (i in 1:I){{\n    slip[i] ~ beta({slip_alpha}, {slip_beta});\n    guess[i] ~ beta({guess_alpha}, {guess_beta});\n  }}\n'
+    model_start = f'model{{\n  array[C] real ps;\n  array[I] real eta;\n\n  for (i in 1:I){{\n    slip[i] ~ beta({slip_alpha}, {slip_beta});\n    guess[i] ~ beta({guess_alpha}, {guess_beta});\n  }}\n'
+    
+    if prof_model == 'linear':
+      if n == 2:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
 
-    if n == 2:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n\n'
 
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n\n'
+      elif n == 3:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        alpha3 = input.att3_alpha()
+        beta3 = input.att3_beta()
 
-    elif n == 3:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-      alpha3 = input.att3_alpha()
-      beta3 = input.att3_beta()
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n\n'
 
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n\n'
+      elif n == 4:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        alpha3 = input.att3_alpha()
+        beta3 = input.att3_beta()
+        alpha4 = input.att4_alpha()
+        beta4 = input.att4_beta()
 
-    elif n == 4:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-      alpha3 = input.att3_alpha()
-      beta3 = input.att3_beta()
-      alpha4 = input.att4_alpha()
-      beta4 = input.att4_beta()
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n\n'
 
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n\n'
+      elif n == 5:
+        alpha1 = input.att1_alpha()
+        beta1 = input.att1_beta()
+        alpha2 = input.att2_alpha()
+        beta2 = input.att2_beta()
+        alpha3 = input.att3_alpha()
+        beta3 = input.att3_beta()
+        alpha4 = input.att4_alpha()
+        beta4 = input.att4_beta()
+        alpha5 = input.att5_alpha()
+        beta5 = input.att5_beta()
 
-    elif n == 5:
-      alpha1 = input.att1_alpha()
-      beta1 = input.att1_beta()
-      alpha2 = input.att2_alpha()
-      beta2 = input.att2_beta()
-      alpha3 = input.att3_alpha()
-      beta3 = input.att3_beta()
-      alpha4 = input.att4_alpha()
-      beta4 = input.att4_beta()
-      alpha5 = input.att5_alpha()
-      beta5 = input.att5_beta()
-
-      priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n  lambda5 ~ beta({alpha5}, {beta5});\n\n'
-  
-    model = model_start + priors + '}'
+        priors = f'  lambda1 ~ beta({alpha1}, {beta1});\n  lambda2 ~ beta({alpha2}, {beta2});\n  lambda3 ~ beta({alpha3}, {beta3});\n  lambda4 ~ beta({alpha4}, {beta4});\n  lambda5 ~ beta({alpha5}, {beta5});\n\n'
+      
+    if prof_model == 'linear':
+      model = model_start + priors + '}'
+    
+    elif prof_model == 'unconstrained':
+      model = model_start + '}'
 
     return model
 
@@ -829,9 +999,9 @@ def server(input: Inputs, output: Outputs, session: Session):
           model_fit.set(fit)
           
           p.set(3,
-                detail = 'Running prior-only model.')
+                detail = 'Running model.')
           
-          pfit = model.sample(
+          pfit = prior_model.sample(
             data = stan_data_dict(),
             inits = get_inits(),
             adapt_delta = .99,
@@ -856,9 +1026,9 @@ def server(input: Inputs, output: Outputs, session: Session):
           model_fit.set(fit)
           
           p.set(3,
-                detail = 'Running prior-only model.')
+                detail = 'Running model.')
           
-          pfit = model.sample(
+          pfit = prior_model.sample(
             data = stan_data_dict(),
             chains = 4,
             parallel_chains = 4,
@@ -881,6 +1051,20 @@ def server(input: Inputs, output: Outputs, session: Session):
     if pfit is None:
       return None
     
+    return pd.DataFrame(fit.summary())
+
+  @reactive.effect
+  @reactive.event(input.run_model)
+  def save_diagnostics():
+    fit = model_fit.get()
+    pfit = prior_fit.get()
+    
+    if fit is None:
+      return None
+    
+    if pfit is None:
+      return None
+
     diag_dir = Path(here('diagnostics'))
     diag_dir.mkdir(parents = True,
                    exist_ok = True)
@@ -888,18 +1072,18 @@ def server(input: Inputs, output: Outputs, session: Session):
     summary_df = pd.DataFrame(fit.summary())
     prior_df = pd.DataFrame(pfit.summary())
     
-    summary_df.to_csv(here(f'{diag_dir}/model_diagnostics.csv'))
-    prior_df.to_csv(here(f'{diag_dir}/prior_diagnostics.csv'))
-    
-    return summary_df
+    summary_df.to_csv(diag_dir/'model_diagnostics.csv')
+    prior_df.to_csv(diag_dir/'prior_diagnostics.csv')
 
   @reactive.effect
   @reactive.event(input.run_model)
   def save_data_models_fits():
     df = loaded_data()
     q = loaded_q()
-    n = q.shape[1] - 1
+    # n = q.shape[1] - 1
+    n = q.filter(regex = 'attr').shape[1]
     alpha = create_alpha()
+    xi = create_xi()
     
     model = compiled_model.get()
     prior_model = compiled_prior.get()
@@ -913,6 +1097,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     df.to_csv(f'{job_dir}/df.csv')
     q.to_csv(f'{job_dir}/q.csv')
     alpha.to_csv(f'{job_dir}/alpha.csv')
+    pd.DataFrame(xi).to_csv(f'{job_dir}/xi.csv')
     
     (joblib.dump([model, fit],
                  here(f'{job_dir}/modfit.joblib'),
@@ -922,7 +1107,6 @@ def server(input: Inputs, output: Outputs, session: Session):
                  here(f'{job_dir}/modfit_prior.joblib'),
                  compress = 3))
     
-  
   @render.table
   def top_rhat_values():
     df = diagnostic_summary()
@@ -936,48 +1120,45 @@ def server(input: Inputs, output: Outputs, session: Session):
   @render.download(filename = 'dcm_report.pdf')
   def download_report():
     if model_fit.get() is None or prior_fit.get() is None:
-        raise SafeException('Run the model first so report inputs exist.')
+      raise SafeException('Run the model first so report inputs exist.')
 
     with ui.Progress(min = 0, max = 100) as p:
-        p.set(message='Rendering report...', detail = 'Preparing parameters', value = 10)
-        
-        report_name = 'report.qmd'
-        out_name = 'dcm_report.pdf'
-        
-        qmd_path = Path(here(f'report/{report_name}'))
-        if not qmd_path.exists():
-            raise SafeException('report/report.qmd was not found.')
+      p.set(message='Rendering report...', detail = 'Preparing parameters', value = 10)
+      
+      report_dir = Path(here('report'))
+      qmd_path = report_dir / 'report.qmd'
+      out_name = 'dcm_report.pdf'
 
-        out_dir = Path(here('report'))
-        out_dir.mkdir(parents = True, exist_ok = True)
+      if not qmd_path.exists():
+        raise SafeException(f'{qmd_path} was not found.')
 
-        cmd = [
-            'quarto', 'render', str(qmd_path),
-            '--to', 'typst',
-            '-P', f'threshold:{input.threshold()}',
-            '--output', out_name,
-            '--output-dir', str(out_dir)
+      cmd = [
+        'quarto', 'render', str(qmd_path),
+        '--to', 'typst',
+        '-P', f'threshold:{input.threshold()}',
+        '--output', out_name
         ]
-
-        p.set(detail = 'Generating document with Quarto...', value = 50)
-        
-        env = os.environ.copy()
-        env['QUARTO_PYTHON'] = sys.executable
-        
-        result = subprocess.run(cmd, capture_output = True, text = True, env = env)
-        if result.returncode != 0:
-            raise SafeException(result.stderr.strip() or 'Quarto render failed.')
-        
-        path = out_dir / out_name
-        
-        p.set(detail = 'Done! Document is downloading.', value = 95)
-        
-        yield path.read_bytes()
+      
+      p.set(detail = 'Generating document with Quarto...', value = 50)
+      
+      env = os.environ.copy()
+      env['QUARTO_PYTHON'] = sys.executable
+      
+      result = subprocess.run(
+        cmd,
+        capture_output = True,
+        text = True,
+        env = env,
+        cwd = str(report_dir)
+        )
+      
+      if result.returncode != 0:
+          raise SafeException(result.stderr.strip() or 'Quarto render failed.')
+      
+      p.set(detail = 'Done! Document is downloading.', value = 95)
+      
+      yield (report_dir / out_name).read_bytes()
 
 # --------------------------------------------------------------------------------------------------------
 
 app = App(app_ui, server)
-
-# --------------------------------------------------------------------------------------------------------
-
-# 
