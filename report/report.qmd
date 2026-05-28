@@ -232,7 +232,7 @@ azp.plot_ppc_dist(idata, kind = 'kde', group = 'posterior_predictive')
 ```{python}
 #| label: PPMC - Cumulative
 
-azp.plot_ppc_dist(idata, kind = 'ecdf', group = 'posterior_predictive',)
+azp.plot_ppc_dist(idata, kind = 'ecdf', group = 'posterior_predictive')
 ```
 
 ## Posterior Predictive P (PPP) value
